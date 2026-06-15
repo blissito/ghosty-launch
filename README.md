@@ -13,7 +13,7 @@ Es un **patrón reusable** — cualquier repo (CRM, ERP, lovable-clone, lo que s
 Un comando — instala **y arranca**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blissito/ghosty-launch/main/install.sh | sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/blissito/ghosty-launch/main/install.sh)"
 ```
 
 (En siguientes ocasiones, solo `ghosty-launch`.)

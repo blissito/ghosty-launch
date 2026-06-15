@@ -41,9 +41,12 @@ case ":$PATH:" in
   *) echo "  (próximos runs) agrega a tu PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 
-# Lánzalo de una vez. En `curl | sh` el stdin es el pipe, así que reconectamos
-# el teclado desde /dev/tty. Si no hay terminal (CI), solo avisamos.
-if [ -e /dev/tty ]; then
+# Lánzalo de una vez. Si stdin ya es una terminal (instalación vía
+# `sh -c "$(curl …)"`), exec directo. Si no, intenta /dev/tty. En CI, solo avisa.
+if [ -t 0 ]; then
+  echo "👻 Lanzando…"
+  exec "$BIN_DIR/ghosty-launch"
+elif [ -e /dev/tty ]; then
   echo "👻 Lanzando…"
   exec "$BIN_DIR/ghosty-launch" </dev/tty
 fi
