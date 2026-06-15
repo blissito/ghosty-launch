@@ -496,6 +496,47 @@ async fn resolve_logo(client: &Client, raw: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Contrato del repo: receta de deploy declarada en `ghosty.toml`. Todo opcional;
+/// lo que falte se auto-detecta (estilo Vercel: build si hay script, npm start).
+#[derive(serde::Deserialize, Default)]
+struct Manifest {
+    #[serde(default)]
+    deploy: Deploy,
+}
+#[derive(serde::Deserialize, Default)]
+struct Deploy {
+    install: Option<String>,
+    build: Option<String>,
+    start: Option<String>,
+}
+
+/// Baja `ghosty.toml` del repo (raw GitHub). Sin manifiesto → Default (auto-detect).
+async fn fetch_manifest(ref_repo: &str) -> Manifest {
+    let slug = ref_repo
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("github.com/")
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    for branch in ["main", "master"] {
+        let url = format!("https://raw.githubusercontent.com/{slug}/{branch}/ghosty.toml");
+        if let Ok(resp) = http.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(text) = resp.text().await {
+                    if let Ok(m) = toml::from_str::<Manifest>(&text) {
+                        return m;
+                    }
+                }
+            }
+        }
+    }
+    Manifest::default()
+}
+
 /// Corre el pipeline completo en background, reportando cada paso.
 /// `app_name`/`accent`/`logo` se inyectan como env a la app (personalización real).
 pub fn spawn_launch(
@@ -509,6 +550,7 @@ pub fn spawn_launch(
         let ref_repo = App::ref_repo();
         let app_name = safe_name(&app_name);
         let logo_url = resolve_logo(&client, &logo).await;
+        let manifest = fetch_manifest(&ref_repo).await;
 
         // Paso 0 — crear VM persistente + poll hasta running.
         let _ = tx.send(Msg::Step {
@@ -587,8 +629,22 @@ pub fn spawn_launch(
             status: StepStatus::Running,
             detail: String::new(),
         });
+        // Receta del contrato (ghosty.toml) o auto-detect.
+        let install = manifest.deploy.install.clone().unwrap_or_else(|| {
+            "if [ -f package-lock.json ]; then npm ci --omit=dev || npm install --omit=dev; else npm install --omit=dev; fi".into()
+        });
+        let build_step = match manifest.deploy.build.clone() {
+            Some(b) => format!("{b}; "),
+            // Auto-detect: corre el build solo si package.json declara script `build`.
+            None => "if node -e \"process.exit(require('./package.json').scripts&&require('./package.json').scripts.build?0:1)\" 2>/dev/null; then npm run build; fi; ".into(),
+        };
+        let start = manifest
+            .deploy
+            .start
+            .clone()
+            .unwrap_or_else(|| "npm start".into());
         let cmd = format!(
-            "set -e; rm -rf /app; git clone --depth 1 {ref_repo} /app; cd /app; if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi; (APP_NAME='{app_name}' APP_ACCENT='{accent}' APP_LOGO='{logo_url}' PORT={APP_PORT} nohup npm start > /tmp/app.log 2>&1 &); sleep 3; echo started"
+            "set -e; rm -rf /app; git clone --depth 1 {ref_repo} /app; cd /app; {install}; {build_step}(APP_NAME='{app_name}' APP_ACCENT='{accent}' APP_LOGO='{logo_url}' PORT={APP_PORT} nohup {start} > /tmp/app.log 2>&1 &); sleep 3; echo started"
         );
         match client.exec(&id, &cmd, 300).await {
             Ok(r) if r.exit_code == 0 => {
