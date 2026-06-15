@@ -75,6 +75,7 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
         }
 
         app.tick = app.tick.wrapping_add(1);
+        app.tick_eyes();
         terminal.draw(|f| ui::render(f, &app))?;
 
         if app.should_quit {
@@ -88,6 +89,7 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
+                    app.last_activity = app.tick; // cualquier tecla lo despierta
                     let ctrl_c = key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL);
                     if ctrl_c {

@@ -158,14 +158,15 @@ fn confetti(buf: &mut ratatui::buffer::Buffer, area: Rect, card: Rect, elapsed: 
 
 /// Fantasmita Ghosty (3 líneas) + wordmark, en morado. Parpadea y cambia ojos.
 fn hero(app: &App) -> Vec<Line<'static>> {
-    let eye = match app.screen {
-        Screen::Live => "◕", // feliz al quedar en vivo
-        Screen::Error => "×",
-        _ => idle_eye(app.tick), // idle animado: mira a los lados, feliz, parpadea
+    // Par de ojos (izq, der). El idle/sueño/bizco vive en App::tick_eyes.
+    let (le, re) = match app.screen {
+        Screen::Live => ("◕", "◕"), // feliz al quedar en vivo
+        Screen::Error => ("×", "×"),
+        _ => app.eyes,
     };
     let mascot = [
         " ▄████▄ ".to_string(),
-        format!("▐ {eye}  {eye} ▌"),
+        format!("▐ {le}  {re} ▌"),
         "▐█▀██▀█▌".to_string(),
     ];
     // Mientras publica, rodeamos al fantasma de destellos que titilan.
@@ -194,40 +195,6 @@ fn hero(app: &App) -> Vec<Line<'static>> {
     ));
     out.push(Line::from(wordmark));
     out
-}
-
-/// Timeline de ojos en idle: (glifo, duración en ticks). Da vida sin distraer:
-/// mira al frente/lados/arriba/abajo, feliz, con parpadeos breves entre estados.
-const MASCOT_EYE_TIMELINE: &[(&str, u64)] = &[
-    ("●", 16), // al frente (reposo)
-    ("─", 2),  // parpadeo
-    ("●", 14),
-    ("◑", 5), // mira a la derecha
-    ("●", 12),
-    ("─", 2),
-    ("●", 10),
-    ("◐", 5), // mira a la izquierda
-    ("●", 12),
-    ("◕", 6), // feliz
-    ("●", 10),
-    ("─", 2),
-    ("●", 10),
-    ("◓", 4), // mira arriba
-    ("●", 12),
-    ("◒", 4), // mira abajo
-    ("●", 14),
-];
-
-fn idle_eye(tick: u64) -> &'static str {
-    let total: u64 = MASCOT_EYE_TIMELINE.iter().map(|(_, d)| *d).sum();
-    let mut pos = tick % total.max(1);
-    for (eye, dur) in MASCOT_EYE_TIMELINE {
-        if pos < *dur {
-            return eye;
-        }
-        pos -= *dur;
-    }
-    "●"
 }
 
 /// Gradiente animado por carácter (una onda de brillo que recorre el texto).

@@ -55,6 +55,27 @@ pub fn chosen_accent(app: &App) -> String {
     }
 }
 
+/// Próxima expresión de ojos (par izq/der) + cuántos ticks dura. Pseudo-random
+/// determinista del tick (no es un ciclo fijo): neutral domina, a veces mira a un
+/// lado/arriba/abajo, feliz, parpadeo corto, y raro un bizco (ojos descruzados).
+fn next_eyes(tick: u64) -> ((&'static str, &'static str), u64) {
+    let h = tick.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(13) ^ (tick << 7);
+    let pick = h % 100;
+    let jitter = h % 10;
+    // Duraciones calmadas (poll ~50ms): neutral domina y dura 2-3.5s; las
+    // expresiones se quedan ~1.2-1.8s. Cambios poco frecuentes, no jittery.
+    match pick {
+        0..=55 => (("●", "●"), 40 + jitter * 4), // neutral (largo)
+        56..=65 => (("◑", "◑"), 24 + jitter),    // mira derecha
+        66..=75 => (("◐", "◐"), 24 + jitter),    // mira izquierda
+        76..=82 => (("◓", "◓"), 22 + jitter),    // arriba
+        83..=88 => (("◒", "◒"), 22 + jitter),    // abajo
+        89..=94 => (("◕", "◕"), 26 + jitter),    // feliz
+        95..=97 => (("◐", "◑"), 14 + jitter),    // bizco (raro)
+        _ => (("─", "─"), 2),                    // parpadeo
+    }
+}
+
 /// Sanea el nombre para inyectarlo seguro en un comando shell (single-quoted).
 fn safe_name(name: &str) -> String {
     let n: String = name
@@ -176,6 +197,10 @@ pub struct App {
     pub sandbox_id: Option<String>,
     /// tick en que se publicó (fresh) → dispara el confetti. None = ver existente.
     pub live_at: Option<u64>,
+    /// Ojos del fantasma (izq, der) + cuándo cambian + última actividad (para dormir).
+    pub eyes: (&'static str, &'static str),
+    pub eyes_until: u64,
+    pub last_activity: u64,
     /// Panel de apps publicadas + cursor de selección.
     pub apps: Vec<AppEntry>,
     pub apps_cursor: usize,
@@ -212,6 +237,9 @@ impl App {
             url: None,
             sandbox_id: None,
             live_at: None,
+            eyes: ("●", "●"),
+            eyes_until: 0,
+            last_activity: 0,
             apps: Vec::new(),
             apps_cursor: 0,
             confirm_destroy: false,
@@ -234,6 +262,29 @@ impl App {
     pub fn logout(&mut self) {
         oauth::clear_creds();
         *self = App::new();
+    }
+
+    /// Avanza la animación de ojos (llamar cada frame). Idle = expresiones random
+    /// (mira a los lados, feliz, parpadeo, a veces bizco). Sin actividad ~10s se
+    /// adormila (ojos medio cerrados) y ~18s se duerme del todo (cerrados).
+    pub fn tick_eyes(&mut self) {
+        const DROWSY_AFTER: u64 = 200; // ~10s
+        const SLEEP_AFTER: u64 = 360; // ~18s
+        let idle = self.tick.saturating_sub(self.last_activity);
+        if idle > SLEEP_AFTER {
+            self.eyes = ("─", "─"); // dormido
+            return;
+        }
+        if idle > DROWSY_AFTER {
+            self.eyes = ("◡", "◡"); // adormilado (medio cerrados)
+            return;
+        }
+        if self.tick < self.eyes_until {
+            return;
+        }
+        let (eyes, dur) = next_eyes(self.tick);
+        self.eyes = eyes;
+        self.eyes_until = self.tick + dur;
     }
 
     /// Aplica un mensaje de tarea async al estado.
