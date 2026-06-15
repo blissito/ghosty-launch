@@ -21,4 +21,4 @@ expression: "render_str(&app, 78, 20)"
           │    ▸ Publicar                                           │
           │                                                         │
           ╰─────────────────────────────────────────────────────────╯
-   enter siguiente    ⇥ campo    esc salir
+   enter siguiente    ⇥ campo    esc volver

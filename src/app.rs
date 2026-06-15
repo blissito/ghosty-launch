@@ -11,8 +11,6 @@ pub const DEFAULT_REF_REPO: &str = "https://github.com/blissito/ghosty-ref-node.
 pub const APP_PORT: u16 = 3000;
 /// Template genérico Node + persistente.
 pub const TEMPLATE: &str = "node";
-/// Nombre con el que marcamos la VM para reencontrarla en runs posteriores.
-pub const APP_NAME: &str = "ghosty-launch";
 
 /// Paleta de acentos para personalizar (nombre, RGB). El hex se inyecta a la app.
 pub const ACCENTS: [(&str, (u8, u8, u8)); 5] = [
@@ -75,11 +73,36 @@ fn safe_name(name: &str) -> String {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     KeyEntry,
+    Apps, // panel: lista de tus apps publicadas (CRUD)
     Consent,
     Customize,
     Launching,
     Live,
     Error,
+}
+
+/// Prefijo en el nombre de la VM que marca "esta app la publicó Ghosty Launch".
+/// El sufijo es el nombre que el user le puso (para mostrar varias distintas).
+pub const APP_PREFIX: &str = "gl:";
+
+pub fn marker_name(app_name: &str) -> String {
+    format!("{APP_PREFIX}{}", safe_name(app_name))
+}
+
+pub fn display_name(sandbox_name: &Option<String>) -> String {
+    sandbox_name
+        .as_deref()
+        .and_then(|n| n.strip_prefix(APP_PREFIX))
+        .unwrap_or("app")
+        .to_string()
+}
+
+/// Una app publicada (fila del panel).
+#[derive(Clone)]
+pub struct AppEntry {
+    pub id: String,
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -108,25 +131,17 @@ impl Step {
 
 /// Mensajes que las tareas async mandan al loop de UI.
 pub enum Msg {
-    Validated {
-        email: Option<String>,
-    },
     ValidateFailed {
         error: String,
     },
     AuthStatus {
         text: String,
     },
-    Authed {
+    /// Tras autenticar (o refrescar): lista de apps publicadas → panel.
+    AppsLoaded {
         client: Client,
         email: Option<String>,
-    },
-    /// Ya había una app publicada: saltamos directo al Live.
-    Resumed {
-        client: Client,
-        email: Option<String>,
-        id: String,
-        url: String,
+        apps: Vec<AppEntry>,
     },
     SandboxCreated {
         id: String,
@@ -159,6 +174,9 @@ pub struct App {
     pub steps: Vec<Step>,
     pub url: Option<String>,
     pub sandbox_id: Option<String>,
+    /// Panel de apps publicadas + cursor de selección.
+    pub apps: Vec<AppEntry>,
+    pub apps_cursor: usize,
     /// Personalización elegida en la pantalla Customize.
     pub app_name: String,
     pub accent_idx: usize,
@@ -187,6 +205,8 @@ impl App {
             steps: Vec::new(),
             url: None,
             sandbox_id: None,
+            apps: Vec::new(),
+            apps_cursor: 0,
             app_name: String::new(),
             accent_idx: 0,
             focus: 0,
@@ -204,11 +224,6 @@ impl App {
     /// Aplica un mensaje de tarea async al estado.
     pub fn apply(&mut self, msg: Msg) {
         match msg {
-            Msg::Validated { email } => {
-                self.validating = false;
-                self.email = email;
-                self.screen = Screen::Consent;
-            }
             Msg::ValidateFailed { error } => {
                 self.validating = false;
                 self.auth_busy = false;
@@ -219,26 +234,18 @@ impl App {
                 self.error = None;
                 self.auth_status = text;
             }
-            Msg::Authed { client, email } => {
-                self.auth_busy = false;
-                self.validating = false;
-                self.client = Some(client);
-                self.email = email;
-                self.screen = Screen::Consent;
-            }
-            Msg::Resumed {
+            Msg::AppsLoaded {
                 client,
                 email,
-                id,
-                url,
+                apps,
             } => {
                 self.auth_busy = false;
                 self.validating = false;
                 self.client = Some(client);
                 self.email = email;
-                self.sandbox_id = Some(id);
-                self.url = Some(url);
-                self.screen = Screen::Live;
+                self.apps_cursor = self.apps_cursor.min(apps.len().saturating_sub(1));
+                self.apps = apps;
+                self.screen = Screen::Apps;
             }
             Msg::SandboxCreated { id } => {
                 self.sandbox_id = Some(id);
@@ -339,51 +346,77 @@ async fn finish_with_token(token: String, tx: UnboundedSender<Msg>) {
             return;
         }
     };
-    // ¿Ya hay una app publicada por nosotros? Si sí, saltamos al Live.
     let _ = tx.send(Msg::AuthStatus {
-        text: "buscando tu app publicada…".into(),
+        text: "cargando tus apps…".into(),
     });
-    if let Some((id, url)) = find_live_app(&client).await {
-        let _ = tx.send(Msg::Resumed {
-            client,
-            email: me.email,
-            id,
-            url,
-        });
-    } else {
-        let _ = tx.send(Msg::Authed {
-            client,
-            email: me.email,
-        });
-    }
+    let apps = list_apps(&client).await;
+    let _ = tx.send(Msg::AppsLoaded {
+        client,
+        email: me.email,
+        apps,
+    });
 }
 
-/// Busca una VM nuestra (`APP_NAME`) en estado running y devuelve (id, url pública).
-async fn find_live_app(client: &Client) -> Option<(String, String)> {
-    let list = client.list_sandboxes().await.ok()?;
+/// Lista las apps que publicó Ghosty Launch (VMs `gl:*` running) con su URL.
+pub async fn list_apps(client: &Client) -> Vec<AppEntry> {
+    let list = match client.list_sandboxes().await {
+        Ok(l) => l,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
     for s in list {
-        if s.name.as_deref() == Some(APP_NAME) && s.status == "running" {
+        let is_ours = s
+            .name
+            .as_deref()
+            .map(|n| n.starts_with(APP_PREFIX))
+            .unwrap_or(false);
+        if is_ours && s.status == "running" {
             if let Ok(exp) = client.expose(&s.sandbox_id, APP_PORT).await {
-                return Some((s.sandbox_id, exp.url));
-            }
-        }
-    }
-    None
-}
-
-/// Valida la llave en background. Envía Validated / ValidateFailed.
-pub fn spawn_validate(client: Client, tx: UnboundedSender<Msg>) {
-    tokio::spawn(async move {
-        match client.validate().await {
-            Ok(me) => {
-                let _ = tx.send(Msg::Validated { email: me.email });
-            }
-            Err(e) => {
-                let _ = tx.send(Msg::ValidateFailed {
-                    error: e.to_string(),
+                out.push(AppEntry {
+                    id: s.sandbox_id,
+                    name: display_name(&s.name),
+                    url: exp.url,
                 });
             }
         }
+    }
+    out
+}
+
+/// Recarga el panel de apps (tras crear/destruir o volver del Live).
+pub fn spawn_list_apps(client: Client, email: Option<String>, tx: UnboundedSender<Msg>) {
+    tokio::spawn(async move {
+        let apps = list_apps(&client).await;
+        let _ = tx.send(Msg::AppsLoaded {
+            client,
+            email,
+            apps,
+        });
+    });
+}
+
+/// Destruye una VM y recarga el panel.
+pub fn spawn_destroy_and_reload(
+    client: Client,
+    id: String,
+    email: Option<String>,
+    tx: UnboundedSender<Msg>,
+) {
+    tokio::spawn(async move {
+        let _ = client.destroy(&id).await;
+        let apps = list_apps(&client).await;
+        let _ = tx.send(Msg::AppsLoaded {
+            client,
+            email,
+            apps,
+        });
+    });
+}
+
+/// Valida una llave/token (la pega el user) y carga el panel. Mismo camino que OAuth.
+pub fn spawn_finish(token: String, tx: UnboundedSender<Msg>) {
+    tokio::spawn(async move {
+        finish_with_token(token, tx).await;
     });
 }
 
@@ -446,7 +479,10 @@ pub fn spawn_launch(
             status: StepStatus::Running,
             detail: String::new(),
         });
-        let sandbox = match client.create_sandbox(TEMPLATE, true, APP_NAME).await {
+        let sandbox = match client
+            .create_sandbox(TEMPLATE, true, &marker_name(&app_name))
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(Msg::Step {

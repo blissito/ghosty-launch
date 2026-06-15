@@ -1,24 +1,26 @@
 ---
 source: src/ui.rs
-expression: "render_str(&app, 78, 20)"
+expression: "render_str(&app, 78, 22)"
 ---
 
-           ╭ consentimiento ──────────────────────────────────────╮
+
+
+
+           ╭ tus apps ────────────────────────────────────────────╮
            │                                                      │
            │                        ▄████▄                        │
            │                       ▐ ◑  ◑ ▌                       │
            │                       ▐█▀██▀█▌                       │
            │         Ghosty Launch  ·  que lo haga Ghosty         │
            │                                                      │
-           │  ✓ conectado: fixtergeek@gmail.com                   │
+           │  Tus apps (2)                                        │
            │                                                      │
-           │  Ghosty hará por ti:                                 │
-           │    · levantar una VM tuya en EasyBits                │
-           │    · clonar tu repo e instalar dependencias          │
-           │    · arrancar la app y publicar su URL pública       │
-           │                                                      │
-           │  ¿Publicamos?   y / n                                │
+           │  › ● Mi Tienda                                       │
+           │        https://sb-a-3000.sandboxes.easybits.cloud    │
+           │    ● Blog                                            │
            │                                                      │
            ╰──────────────────────────────────────────────────────╯
 
-   y publicar    n volver
+
+
+   enter ver    n nueva    d borrar    q salir

@@ -8,7 +8,10 @@ mod oauth;
 mod ui;
 
 use anyhow::Result;
-use app::{spawn_launch, spawn_oauth, spawn_reconnect, spawn_validate, App, Screen};
+use app::{
+    spawn_destroy_and_reload, spawn_finish, spawn_launch, spawn_list_apps, spawn_oauth,
+    spawn_reconnect, App, Screen,
+};
 use crossterm::{
     event::{
         self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
@@ -17,7 +20,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use easybits::Client;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{io, time::Duration};
 use tokio::sync::mpsc;
@@ -122,21 +124,16 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
     Ok(())
 }
 
-/// Valida la llave actual (dispara la tarea async). Lo usan Enter y el pegado.
+/// Valida la llave/token pegado y carga el panel (mismo camino que OAuth).
 fn submit_key(app: &mut App, tx: &mpsc::UnboundedSender<app::Msg>) {
     let key = app.key_input.trim().to_string();
-    if key.is_empty() || app.validating {
+    if key.is_empty() || app.auth_busy {
         return;
     }
-    match Client::new(key) {
-        Ok(client) => {
-            app.error = None;
-            app.validating = true;
-            app.client = Some(client.clone());
-            spawn_validate(client, tx.clone());
-        }
-        Err(e) => app.error = Some(e.to_string()),
-    }
+    app.error = None;
+    app.auth_busy = true;
+    app.auth_status = "validando…".into();
+    spawn_finish(key, tx.clone());
 }
 
 fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>) {
@@ -177,20 +174,53 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 }
             }
         }
+        Screen::Apps => {
+            let n = app.apps.len();
+            match code {
+                KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+                KeyCode::Up if n > 0 => app.apps_cursor = (app.apps_cursor + n - 1) % n,
+                KeyCode::Down if n > 0 => app.apps_cursor = (app.apps_cursor + 1) % n,
+                // Nueva app: limpia la personalización y entra al flujo de publicar.
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    app.key_input.clear();
+                    app.logo_input.clear();
+                    app.accent_idx = 0;
+                    app.custom_hex = "#".into();
+                    app.focus = 0;
+                    app.screen = Screen::Consent;
+                }
+                KeyCode::Enter if n > 0 => {
+                    let a = &app.apps[app.apps_cursor];
+                    app.url = Some(a.url.clone());
+                    app.sandbox_id = Some(a.id.clone());
+                    app.screen = Screen::Live;
+                }
+                KeyCode::Char('o') if n > 0 => {
+                    let _ = open_browser(&app.apps[app.apps_cursor].url);
+                }
+                KeyCode::Char('d') if n > 0 => {
+                    let id = app.apps[app.apps_cursor].id.clone();
+                    if let Some(client) = app.client.clone() {
+                        spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
         Screen::Consent => match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 app.key_input.clear(); // se reusa como buffer del nombre
                 app.screen = Screen::Customize;
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                app.should_quit = true;
+                app.screen = Screen::Apps;
             }
             _ => {}
         },
         Screen::Customize => {
             let count = app::ACCENTS.len() + 1; // presets + custom
             match code {
-                KeyCode::Esc => app.should_quit = true,
+                KeyCode::Esc => app.screen = Screen::Apps,
                 KeyCode::Tab | KeyCode::Down => app.focus = (app.focus + 1) % app::FOCUS_COUNT,
                 KeyCode::Up => {
                     app.focus = (app.focus + app::FOCUS_COUNT - 1) % app::FOCUS_COUNT;
@@ -249,23 +279,22 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             }
         }
         Screen::Live => match code {
-            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('q') => app.should_quit = true,
             KeyCode::Char('o') => {
                 if let Some(url) = &app.url {
                     let _ = open_browser(url);
                 }
             }
-            KeyCode::Char('r') => {
-                // Re-publicar: vuelve a personalizar (creará/actualizará la app).
-                app.screen = Screen::Customize;
+            // Volver al panel (recarga la lista).
+            KeyCode::Char('b') | KeyCode::Esc => {
+                if let Some(client) = app.client.clone() {
+                    spawn_list_apps(client, app.email.clone(), tx.clone());
+                }
             }
             KeyCode::Char('d') => {
                 if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
-                    tokio::spawn(async move {
-                        let _ = client.destroy(&id).await;
-                    });
+                    spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
                 }
-                app.should_quit = true;
             }
             _ => {}
         },

@@ -28,6 +28,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let (title, content) = match app.screen {
         Screen::KeyEntry => ("conexión", key_entry(app)),
+        Screen::Apps => ("tus apps", apps(app)),
         Screen::Consent => ("consentimiento", consent(app)),
         Screen::Customize => ("personaliza", customize(app)),
         Screen::Launching => ("publicando", launch(app)),
@@ -216,12 +217,19 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("k", "pegar llave"),
             ("esc", "salir"),
         ],
-        Screen::Consent => &[("y", "publicar"), ("n", "cancelar")],
-        Screen::Customize => &[("enter", "siguiente"), ("⇥", "campo"), ("esc", "salir")],
+        Screen::Apps if app.apps.is_empty() => &[("n", "crear"), ("q", "salir")],
+        Screen::Apps => &[
+            ("enter", "ver"),
+            ("n", "nueva"),
+            ("d", "borrar"),
+            ("q", "salir"),
+        ],
+        Screen::Consent => &[("y", "publicar"), ("n", "volver")],
+        Screen::Customize => &[("enter", "siguiente"), ("⇥", "campo"), ("esc", "volver")],
         Screen::Launching => &[("esc", "cancelar")],
         Screen::Live => &[
             ("o", "abrir"),
-            ("r", "re-publicar"),
+            ("b", "volver"),
             ("d", "destruir"),
             ("q", "salir"),
         ],
@@ -403,6 +411,54 @@ fn consent(app: &App) -> Vec<Line<'static>> {
             Span::styled("   y / n", Style::default().fg(DIM)),
         ]),
     ]
+}
+
+fn apps(app: &App) -> Vec<Line<'static>> {
+    if app.apps.is_empty() {
+        return vec![
+            Line::from(Span::styled(
+                "Aún no tienes apps publicadas.",
+                Style::default().fg(TEXT),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "  n  ",
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("publicar una", Style::default().fg(TEXT)),
+            ]),
+        ];
+    }
+    let mut out = vec![
+        Line::from(Span::styled(
+            format!("Tus apps ({})", app.apps.len()),
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    for (i, a) in app.apps.iter().enumerate() {
+        let sel = i == app.apps_cursor;
+        let name_style = if sel {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT)
+        };
+        out.push(Line::from(vec![
+            Span::styled(
+                if sel { "› ● " } else { "  ● " }.to_string(),
+                Style::default().fg(if sel { ACCENT } else { SUCCESS }),
+            ),
+            Span::styled(a.name.clone(), name_style),
+        ]));
+        if sel {
+            out.push(Line::from(Span::styled(
+                format!("      {}", a.url),
+                Style::default().fg(DIM),
+            )));
+        }
+    }
+    out
 }
 
 fn customize(app: &App) -> Vec<Line<'static>> {
@@ -642,7 +698,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod snapshot {
     use super::*;
-    use crate::app::{App, Screen, StepStatus};
+    use crate::app::{App, AppEntry, Screen, StepStatus};
     use ratatui::{backend::TestBackend, Terminal};
 
     fn render_str(app: &App, w: u16, h: u16) -> String {
@@ -674,6 +730,25 @@ mod snapshot {
         app.email = Some("fixtergeek@gmail.com".into());
         app.screen = Screen::Consent;
         insta::assert_snapshot!(render_str(&app, 78, 20));
+    }
+
+    #[test]
+    fn apps_panel() {
+        let mut app = App::new();
+        app.screen = Screen::Apps;
+        app.apps = vec![
+            AppEntry {
+                id: "sb_a".into(),
+                name: "Mi Tienda".into(),
+                url: "https://sb-a-3000.sandboxes.easybits.cloud".into(),
+            },
+            AppEntry {
+                id: "sb_b".into(),
+                name: "Blog".into(),
+                url: "https://sb-b-3000.sandboxes.easybits.cloud".into(),
+            },
+        ];
+        insta::assert_snapshot!(render_str(&app, 78, 22));
     }
 
     #[test]
