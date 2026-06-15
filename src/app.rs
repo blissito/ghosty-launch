@@ -740,7 +740,16 @@ async fn publish_static(
     let dir = std::env::temp_dir().join("ghosty-launch-static");
     let _ = tokio::fs::remove_dir_all(&dir).await;
     let ok = tokio::process::Command::new("git")
-        .args(["clone", "--depth", "1", repo, &dir.to_string_lossy()])
+        .args([
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            repo,
+            &dir.to_string_lossy(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .await
         .map(|s| s.success())
