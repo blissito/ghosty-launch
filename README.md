@@ -28,7 +28,7 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/blissito/ghosty-launch/mai
 3. **Publica** — Ghosty levanta tu VM, clona el repo en `/app`, instala, arranca y expone el puerto.
 4. **En vivo** — tu URL `https://sb-…easybits.cloud`. `o` abre, `r` re-publica, `d` destruye.
 
-**Lo único que necesitas:** una cuenta EasyBits ([signup](https://www.easybits.cloud)). 
+**Lo único que necesitas:** una cuenta EasyBits ([signup](https://www.easybits.cloud/login)). 
 
 ⚠️ La VM publicada es **persistente (always-on) = cargo mensual** en tu cuenta EasyBits hasta que la destruyas (`d`).
 
