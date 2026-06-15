@@ -1,4 +1,6 @@
-# 👻 Ghosty Launch
+<p align="center"><img src="assets/ghosty.png" width="140" alt="Ghosty" /></p>
+
+# Ghosty Launch
 
 > Que lo haga Ghosty. Clona un repo y lo publica **en vivo en producción** sobre las VMs de [EasyBits](https://www.easybits.cloud) — con tu cuenta y casi nada más.
 
