@@ -38,6 +38,13 @@ fi
 echo "✓ Instalado en $BIN_DIR/ghosty-launch"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) echo "  Agrega a tu PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;;
+  *) echo "  (próximos runs) agrega a tu PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
+
+# Lánzalo de una vez. En `curl | sh` el stdin es el pipe, así que reconectamos
+# el teclado desde /dev/tty. Si no hay terminal (CI), solo avisamos.
+if [ -e /dev/tty ]; then
+  echo "👻 Lanzando…"
+  exec "$BIN_DIR/ghosty-launch" </dev/tty
+fi
 echo "  Corre:  ghosty-launch"

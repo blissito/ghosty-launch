@@ -10,15 +10,13 @@ Es un **patrón reusable** — cualquier repo (CRM, ERP, lovable-clone, lo que s
 
 ## Instalación
 
+Un comando — instala **y arranca**:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/blissito/ghosty-launch/main/install.sh | sh
 ```
 
-Luego corre:
-
-```bash
-ghosty-launch
-```
+(En siguientes ocasiones, solo `ghosty-launch`.)
 
 > Windows: baja el `.zip` desde [Releases](https://github.com/blissito/ghosty-launch/releases).
 > macOS: el binario no está notarizado aún; el instalador le quita la cuarentena automáticamente.
