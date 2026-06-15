@@ -597,12 +597,7 @@ struct Deploy {
 
 /// Baja `ghosty.toml` del repo (raw GitHub). Sin manifiesto → Default (auto-detect).
 async fn fetch_manifest(ref_repo: &str) -> Manifest {
-    let slug = ref_repo
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_start_matches("github.com/")
-        .trim_end_matches('/')
-        .trim_end_matches(".git");
+    let slug = repo_slug(ref_repo);
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -622,13 +617,19 @@ async fn fetch_manifest(ref_repo: &str) -> Manifest {
     Manifest::default()
 }
 
+/// `owner/repo` desde cualquier forma: https, ssh (git@github.com:...), o slug.
 fn repo_slug(repo: &str) -> String {
-    repo.trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_start_matches("github.com/")
-        .trim_end_matches('/')
-        .trim_end_matches(".git")
-        .to_string()
+    let s = repo.trim();
+    let s = s.strip_prefix("git@github.com:").unwrap_or(s);
+    let s = s.strip_prefix("https://").unwrap_or(s);
+    let s = s.strip_prefix("http://").unwrap_or(s);
+    let s = s.strip_prefix("github.com/").unwrap_or(s);
+    s.trim_end_matches('/').trim_end_matches(".git").to_string()
+}
+
+/// URL de clone https público (normaliza SSH/slug). Repos privados no funcionan aún.
+fn repo_https(repo: &str) -> String {
+    format!("https://github.com/{}.git", repo_slug(repo))
 }
 
 /// Estático si `ghosty.toml type="static"`, o si el repo NO tiene `package.json`.
@@ -745,7 +746,7 @@ async fn publish_static(
             "--quiet",
             "--depth",
             "1",
-            repo,
+            &repo_https(repo),
             &dir.to_string_lossy(),
         ])
         .stdout(std::process::Stdio::null())
@@ -800,7 +801,7 @@ pub fn spawn_launch(
     logo: String,
 ) {
     tokio::spawn(async move {
-        let ref_repo = repo;
+        let ref_repo = repo_https(&repo); // normaliza SSH/slug → https público
         let app_name = safe_name(&app_name);
         let logo_url = resolve_logo(&client, &logo).await;
         let manifest = fetch_manifest(&ref_repo).await;
