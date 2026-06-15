@@ -458,6 +458,18 @@ fn apps(app: &App) -> Vec<Line<'static>> {
             )));
         }
     }
+    if app.confirm_destroy {
+        let name = app
+            .apps
+            .get(app.apps_cursor)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+        out.push(Line::from(""));
+        out.push(Line::from(Span::styled(
+            format!("¿Borrar «{name}»?  s = sí · esc = no"),
+            Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+        )));
+    }
     out
 }
 
@@ -639,6 +651,13 @@ fn launch(app: &App) -> Vec<Line<'static>> {
             out.push(Line::from(Span::styled(
                 format!("clonado en /app dentro de tu VM ({short}…)"),
                 Style::default().fg(DIM),
+            )));
+        }
+        if app.confirm_destroy {
+            out.push(Line::from(""));
+            out.push(Line::from(Span::styled(
+                "¿Borrar esta app?  s = sí · esc = no",
+                Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
             )));
         }
     } else {

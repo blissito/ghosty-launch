@@ -177,6 +177,8 @@ pub struct App {
     /// Panel de apps publicadas + cursor de selección.
     pub apps: Vec<AppEntry>,
     pub apps_cursor: usize,
+    /// Pidiendo confirmación antes de destruir (en panel o Live).
+    pub confirm_destroy: bool,
     /// Personalización elegida en la pantalla Customize.
     pub app_name: String,
     pub accent_idx: usize,
@@ -207,6 +209,7 @@ impl App {
             sandbox_id: None,
             apps: Vec::new(),
             apps_cursor: 0,
+            confirm_destroy: false,
             app_name: String::new(),
             accent_idx: 0,
             focus: 0,

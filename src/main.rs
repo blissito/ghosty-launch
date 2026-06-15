@@ -176,6 +176,17 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
         }
         Screen::Apps => {
             let n = app.apps.len();
+            // Confirmación de borrado pendiente: s = sí, cualquier otra = cancela.
+            if app.confirm_destroy {
+                app.confirm_destroy = false;
+                if matches!(code, KeyCode::Char('s' | 'S' | 'y' | 'Y')) && n > 0 {
+                    let id = app.apps[app.apps_cursor].id.clone();
+                    if let Some(client) = app.client.clone() {
+                        spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
+                    }
+                }
+                return;
+            }
             // Crear: tecla `c`, o `enter` cuando no hay apps (nada que seleccionar).
             let create = matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
                 || (code == KeyCode::Enter && n == 0);
@@ -201,12 +212,7 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 KeyCode::Char('o') if n > 0 => {
                     let _ = open_browser(&app.apps[app.apps_cursor].url);
                 }
-                KeyCode::Char('d') if n > 0 => {
-                    let id = app.apps[app.apps_cursor].id.clone();
-                    if let Some(client) = app.client.clone() {
-                        spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
-                    }
-                }
+                KeyCode::Char('d') if n > 0 => app.confirm_destroy = true,
                 _ => {}
             }
         }
@@ -281,26 +287,35 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 app.should_quit = true;
             }
         }
-        Screen::Live => match code {
-            KeyCode::Char('q') => app.should_quit = true,
-            KeyCode::Char('o') => {
-                if let Some(url) = &app.url {
-                    let _ = open_browser(url);
+        Screen::Live => {
+            // Confirmación de borrado pendiente.
+            if app.confirm_destroy {
+                app.confirm_destroy = false;
+                if matches!(code, KeyCode::Char('s' | 'S' | 'y' | 'Y')) {
+                    if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
+                        spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
+                    }
                 }
+                return;
             }
-            // Volver al panel (recarga la lista).
-            KeyCode::Char('b') | KeyCode::Esc => {
-                if let Some(client) = app.client.clone() {
-                    spawn_list_apps(client, app.email.clone(), tx.clone());
+            match code {
+                KeyCode::Char('q') => app.should_quit = true,
+                KeyCode::Char('o') => {
+                    if let Some(url) = &app.url {
+                        let _ = open_browser(url);
+                    }
                 }
-            }
-            KeyCode::Char('d') => {
-                if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
-                    spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
+                // Volver al panel: instantáneo (lista en memoria) + refresca al fondo.
+                KeyCode::Char('b') | KeyCode::Esc => {
+                    app.screen = Screen::Apps;
+                    if let Some(client) = app.client.clone() {
+                        spawn_list_apps(client, app.email.clone(), tx.clone());
+                    }
                 }
+                KeyCode::Char('d') => app.confirm_destroy = true,
+                _ => {}
             }
-            _ => {}
-        },
+        }
         Screen::Error => {
             if code == KeyCode::Esc {
                 app.should_quit = true;
