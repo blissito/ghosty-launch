@@ -76,6 +76,19 @@ fn next_eyes(tick: u64) -> ((&'static str, &'static str), u64) {
     }
 }
 
+/// Borra la última palabra de un buffer (Ctrl+W). En URLs sin espacios = limpia todo.
+pub fn delete_last_word(s: &mut String) {
+    while s.ends_with(' ') {
+        s.pop();
+    }
+    while let Some(c) = s.chars().last() {
+        if c == ' ' {
+            break;
+        }
+        s.pop();
+    }
+}
+
 /// Sanea el nombre para inyectarlo seguro en un comando shell (single-quoted).
 fn safe_name(name: &str) -> String {
     let n: String = name
@@ -273,6 +286,21 @@ impl App {
     pub fn logout(&mut self) {
         oauth::clear_creds();
         *self = App::new();
+    }
+
+    /// El buffer de texto editable según la pantalla/foco actual (para Ctrl+U/W).
+    pub fn active_input(&mut self) -> Option<&mut String> {
+        match self.screen {
+            Screen::KeyEntry if self.paste_mode => Some(&mut self.key_input),
+            Screen::Create => Some(&mut self.repo_input),
+            Screen::Customize => match self.focus {
+                FOCUS_NAME => Some(&mut self.key_input),
+                FOCUS_LOGO => Some(&mut self.logo_input),
+                FOCUS_COLOR if self.accent_idx == CUSTOM_ACCENT => Some(&mut self.custom_hex),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Empezar a crear: limpia la personalización y pide el repo (prefilla el default).

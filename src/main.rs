@@ -90,10 +90,22 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                         continue;
                     }
                     app.last_activity = app.tick; // cualquier tecla lo despierta
-                    let ctrl_c = key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL);
-                    if ctrl_c {
-                        app.should_quit = true;
+                                                  // Atajos readline en cualquier input: Ctrl+C salir, U limpiar, W palabra.
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        match key.code {
+                            KeyCode::Char('c') => app.should_quit = true,
+                            KeyCode::Char('u') => {
+                                if let Some(b) = app.active_input() {
+                                    b.clear();
+                                }
+                            }
+                            KeyCode::Char('w') => {
+                                if let Some(b) = app.active_input() {
+                                    app::delete_last_word(b);
+                                }
+                            }
+                            _ => {}
+                        }
                         continue;
                     }
                     handle_key(&mut app, key.code, &tx);
