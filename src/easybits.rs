@@ -137,11 +137,14 @@ impl Client {
     }
 
     /// POST /api/v2/sandboxes/:id/exec — corre un comando dentro de la VM.
+    /// El exec es síncrono (la petición HTTP queda abierta hasta que termina), así
+    /// que el timeout HTTP debe superar al del comando (build largo de RRv7, etc.).
     pub async fn exec(&self, id: &str, command: &str, timeout_seconds: u32) -> Result<ExecResult> {
         let resp = self
             .http
             .post(self.url(&format!("/sandboxes/{id}/exec")))
             .bearer_auth(&self.api_key)
+            .timeout(Duration::from_secs(timeout_seconds as u64 + 30))
             .json(&serde_json::json!({
                 "command": command,
                 "timeoutSeconds": timeout_seconds,

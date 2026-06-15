@@ -935,7 +935,8 @@ pub fn spawn_launch(
         let cmd = format!(
             "set -e; rm -rf /app; git clone --depth 1 {ref_repo} /app; cd /app; {install}; {build_step}(APP_NAME='{app_name}' APP_ACCENT='{accent}' APP_LOGO='{logo_url}' PORT={APP_PORT} nohup {start} > /tmp/app.log 2>&1 &); sleep 3; echo started"
         );
-        match client.exec(&id, &cmd, 300).await {
+        // Build de apps reales (RRv7, etc.) puede tardar varios minutos; 10 min de margen.
+        match client.exec(&id, &cmd, 600).await {
             Ok(r) if r.exit_code == 0 => {
                 let _ = tx.send(Msg::Step {
                     idx: 1,
