@@ -116,20 +116,52 @@ fn draw_card(frame: &mut Frame, area: Rect, app: &App, title: &str, content: Vec
                 render_hyperlink(frame.buffer_mut(), split[1].x, row, "→ abrir tu app ↗", url);
             }
         }
+        // Confetti al publicar (fresh) — cae en los márgenes ~2s, sin tapar la tarjeta.
+        if let Some(t0) = app.live_at {
+            let elapsed = app.tick.saturating_sub(t0);
+            if elapsed < 44 {
+                confetti(frame.buffer_mut(), area, card, elapsed);
+            }
+        }
+    }
+}
+
+/// Estallido de confetti: partículas de colores que caen en los márgenes (fuera
+/// de la tarjeta) durante el momento "en vivo". Determinista por partícula.
+fn confetti(buf: &mut ratatui::buffer::Buffer, area: Rect, card: Rect, elapsed: u64) {
+    const COLORS: [Color; 5] = [
+        Color::Rgb(167, 139, 250),
+        Color::Rgb(122, 211, 161),
+        Color::Rgb(244, 114, 182),
+        Color::Rgb(245, 196, 83),
+        Color::Rgb(45, 212, 191),
+    ];
+    const GLYPHS: [&str; 4] = ["▪", "●", "✦", "•"];
+    let w = area.width.max(1) as u32;
+    for i in 0..70u32 {
+        let h = i.wrapping_mul(2_654_435_761) ^ 0x9e37_79b9;
+        let x = area.x + (h % w) as u16;
+        let speed = 1 + (i as u64 % 3);
+        let y = area.y + ((elapsed * speed) / 2 + (i as u64 % 6)) as u16;
+        if y >= area.bottom() {
+            continue;
+        }
+        // No tapar la tarjeta: solo en los márgenes.
+        if x >= card.x && x < card.right() && y >= card.y && y < card.bottom() {
+            continue;
+        }
+        let g = GLYPHS[(i as usize) % GLYPHS.len()];
+        let c = COLORS[((i + (h >> 8)) as usize) % COLORS.len()];
+        buf[(x, y)].set_symbol(g).set_fg(c);
     }
 }
 
 /// Fantasmita Ghosty (3 líneas) + wordmark, en morado. Parpadea y cambia ojos.
 fn hero(app: &App) -> Vec<Line<'static>> {
-    let blink = app.tick % 55 >= 53;
-    let eye = if blink {
-        "─"
-    } else {
-        match app.screen {
-            Screen::Live => "◕",
-            Screen::Error => "×",
-            _ => "◑",
-        }
+    let eye = match app.screen {
+        Screen::Live => "◕", // feliz al quedar en vivo
+        Screen::Error => "×",
+        _ => idle_eye(app.tick), // idle animado: mira a los lados, feliz, parpadea
     };
     let mascot = [
         " ▄████▄ ".to_string(),
@@ -162,6 +194,23 @@ fn hero(app: &App) -> Vec<Line<'static>> {
     ));
     out.push(Line::from(wordmark));
     out
+}
+
+/// Ojos en idle: ciclo lento de expresiones (neutral, mira der/izq, feliz) con un
+/// parpadeo breve entre cada una. Da sensación de "vivo" sin distraer.
+fn idle_eye(tick: u64) -> &'static str {
+    const PHASE: u64 = 38; // ~1.9s por expresión (poll ~50ms)
+    if tick % PHASE >= PHASE - 2 {
+        return "─"; // parpadeo entre expresiones
+    }
+    match (tick / PHASE) % 6 {
+        0 => "●", // neutral
+        1 => "◑", // mira a la derecha
+        2 => "●", // neutral
+        3 => "◐", // mira a la izquierda
+        4 => "◕", // feliz
+        _ => "●",
+    }
 }
 
 /// Gradiente animado por carácter (una onda de brillo que recorre el texto).
@@ -437,6 +486,13 @@ fn apps(app: &App) -> Vec<Line<'static>> {
         )),
         Line::from(""),
     ];
+    if let Some(b) = &app.busy {
+        out.push(Line::from(Span::styled(
+            format!("{} {b}", SPINNER[(app.tick % 10) as usize]),
+            Style::default().fg(ACCENT),
+        )));
+        out.push(Line::from(""));
+    }
     for (i, a) in app.apps.iter().enumerate() {
         let sel = i == app.apps_cursor;
         let name_style = if sel {

@@ -174,11 +174,15 @@ pub struct App {
     pub steps: Vec<Step>,
     pub url: Option<String>,
     pub sandbox_id: Option<String>,
+    /// tick en que se publicó (fresh) → dispara el confetti. None = ver existente.
+    pub live_at: Option<u64>,
     /// Panel de apps publicadas + cursor de selección.
     pub apps: Vec<AppEntry>,
     pub apps_cursor: usize,
     /// Pidiendo confirmación antes de destruir (en panel o Live).
     pub confirm_destroy: bool,
+    /// Operación async en curso en el panel (borrando/actualizando) → spinner.
+    pub busy: Option<String>,
     /// Personalización elegida en la pantalla Customize.
     pub app_name: String,
     pub accent_idx: usize,
@@ -207,9 +211,11 @@ impl App {
             steps: Vec::new(),
             url: None,
             sandbox_id: None,
+            live_at: None,
             apps: Vec::new(),
             apps_cursor: 0,
             confirm_destroy: false,
+            busy: None,
             app_name: String::new(),
             accent_idx: 0,
             focus: 0,
@@ -244,6 +250,7 @@ impl App {
             } => {
                 self.auth_busy = false;
                 self.validating = false;
+                self.busy = None;
                 self.client = Some(client);
                 self.email = email;
                 self.apps_cursor = self.apps_cursor.min(apps.len().saturating_sub(1));
@@ -278,6 +285,7 @@ impl App {
             }
             Msg::Live { url } => {
                 self.url = Some(url);
+                self.live_at = Some(self.tick); // publicación fresca → confetti
                 self.screen = Screen::Live;
             }
             Msg::Failed { error } => {

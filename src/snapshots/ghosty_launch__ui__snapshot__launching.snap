@@ -9,7 +9,7 @@ expression: "render_str(&app, 78, 20)"
            │                                                      │
            │                                ·                     │
            │                ·       ▄████▄       ·                │
-           │                       ▐ ◑  ◑ ▌     ✧                 │
+           │                       ▐ ●  ● ▌     ✧                 │
            │                       ▐█▀██▀█▌                       │
            │         Ghosty Launch  ·  que lo haga Ghosty         │
            │  ● Creando VM persistente                            │

@@ -9,7 +9,7 @@ expression: "render_str(&app, 78, 22)"
            ╭ tus apps ────────────────────────────────────────────╮
            │                                                      │
            │                        ▄████▄                        │
-           │                       ▐ ◑  ◑ ▌                       │
+           │                       ▐ ●  ● ▌                       │
            │                       ▐█▀██▀█▌                       │
            │         Ghosty Launch  ·  que lo haga Ghosty         │
            │                                                      │

@@ -182,6 +182,7 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 if matches!(code, KeyCode::Char('s' | 'S' | 'y' | 'Y')) && n > 0 {
                     let id = app.apps[app.apps_cursor].id.clone();
                     if let Some(client) = app.client.clone() {
+                        app.busy = Some("borrando…".into());
                         spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
                     }
                 }
@@ -207,6 +208,7 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                     let a = &app.apps[app.apps_cursor];
                     app.url = Some(a.url.clone());
                     app.sandbox_id = Some(a.id.clone());
+                    app.live_at = None; // ver existente → sin confetti
                     app.screen = Screen::Live;
                 }
                 KeyCode::Char('o') if n > 0 => {
@@ -293,6 +295,8 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 app.confirm_destroy = false;
                 if matches!(code, KeyCode::Char('s' | 'S' | 'y' | 'Y')) {
                     if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
+                        app.busy = Some("borrando…".into());
+                        app.screen = Screen::Apps; // el indicador se ve en el panel
                         spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
                     }
                 }
@@ -309,6 +313,7 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 KeyCode::Char('b') | KeyCode::Esc => {
                     app.screen = Screen::Apps;
                     if let Some(client) = app.client.clone() {
+                        app.busy = Some("actualizando…".into());
                         spawn_list_apps(client, app.email.clone(), tx.clone());
                     }
                 }
