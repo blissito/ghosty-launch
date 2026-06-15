@@ -1,0 +1,24 @@
+---
+source: src/ui.rs
+expression: "render_str(&app, 78, 20)"
+---
+
+           ╭ consentimiento ──────────────────────────────────────╮
+           │                                                      │
+           │                        ▄████▄                        │
+           │                       ▐ ◑  ◑ ▌                       │
+           │                       ▐█▀██▀█▌                       │
+           │         Ghosty Launch  ·  que lo haga Ghosty         │
+           │                                                      │
+           │  ✓ conectado: fixtergeek@gmail.com                   │
+           │                                                      │
+           │  Ghosty hará por ti:                                 │
+           │    · levantar una VM tuya en EasyBits                │
+           │    · clonar tu repo e instalar dependencias          │
+           │    · arrancar la app y publicar su URL pública       │
+           │                                                      │
+           │  ¿Publicamos?   y / n                                │
+           │                                                      │
+           ╰──────────────────────────────────────────────────────╯
+
+   y publicar    n cancelar

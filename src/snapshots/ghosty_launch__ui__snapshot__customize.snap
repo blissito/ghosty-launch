@@ -1,0 +1,24 @@
+---
+source: src/ui.rs
+expression: "render_str(&app, 78, 20)"
+---
+
+          ╭ personaliza ────────────────────────────────────────────╮
+          │                                                         │
+          │                         ▄████▄                          │
+          │                        ▐ ◑  ◑ ▌                         │
+          │                        ▐█▀██▀█▌                         │
+          │          Ghosty Launch  ·  que lo haga Ghosty           │
+          │                                                         │
+          │  Personaliza tu app                                     │
+          │                                                         │
+          │  › nombre  Mi Tienda▏                                   │
+          │                                                         │
+          │    color    █  █ [█] █  █  ✎                            │
+          │                                                         │
+          │    logo    (opcional — ruta o URL, o arrastra)          │
+          │                                                         │
+          │    ▸ Publicar                                           │
+          │                                                         │
+          ╰─────────────────────────────────────────────────────────╯
+   enter siguiente    ⇥ campo    esc salir

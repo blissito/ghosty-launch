@@ -1,0 +1,9 @@
+{
+  "name": "ghosty-ref-node",
+  "version": "0.0.1",
+  "private": true,
+  "description": "App de referencia trivial para Ghosty Launch — server HTTP sin build.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

@@ -1,0 +1,24 @@
+---
+source: src/ui.rs
+expression: "render_str(&app, 78, 20)"
+---
+
+
+           ╭ conexión ────────────────────────────────────────────╮
+           │                                                      │
+           │                        ▄████▄                        │
+           │                       ▐ ◑  ◑ ▌                       │
+           │                       ▐█▀██▀█▌                       │
+           │         Ghosty Launch  ·  que lo haga Ghosty         │
+           │                                                      │
+           │  Conéctate con EasyBits                              │
+           │                                                      │
+           │    enter  conectar con el navegador (OAuth)          │
+           │    k  pegar tu llave eb_sk_…                         │
+           │                                                      │
+           │  sin copiar llaves: te conecta por el navegador      │
+           │                                                      │
+           ╰──────────────────────────────────────────────────────╯
+
+
+   enter conectar    k pegar llave    esc salir
