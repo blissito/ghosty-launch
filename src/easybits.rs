@@ -216,6 +216,70 @@ impl Client {
         Ok(url)
     }
 
+    /// POST /api/v2/websites — crea un sitio estático (CDN). Devuelve (id, url pública).
+    pub async fn create_website(&self, name: &str) -> Result<(String, String)> {
+        let resp = self
+            .http
+            .post(self.url("/websites"))
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await?;
+        ensure_ok(&resp.status(), "POST /websites")?;
+        let v: serde_json::Value = resp.json().await?;
+        let w = v.get("website").unwrap_or(&v);
+        let id = w
+            .get("id")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("respuesta sin website.id"))?
+            .to_string();
+        let url = w
+            .get("url")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok((id, url))
+    }
+
+    /// Sube un archivo estático a un website (presigned PUT). `path` puede llevar subdirs.
+    pub async fn upload_website_file(
+        &self,
+        website_id: &str,
+        path: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        let resp = self
+            .http
+            .post(self.url(&format!("/websites/{website_id}/files")))
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({
+                "fileName": path,
+                "contentType": content_type,
+                "size": bytes.len(),
+            }))
+            .send()
+            .await?;
+        ensure_ok(&resp.status(), "POST /websites/:id/files")?;
+        let v: serde_json::Value = resp.json().await?;
+        let put_url = v
+            .get("putUrl")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("respuesta sin putUrl"))?
+            .to_string();
+        let put = self
+            .http
+            .put(&put_url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(bytes)
+            .send()
+            .await?;
+        if !put.status().is_success() {
+            return Err(anyhow!("PUT {path} falló: HTTP {}", put.status().as_u16()));
+        }
+        Ok(())
+    }
+
     /// GET crudo (status + body sin parsear) para debug.
     pub async fn get_raw(&self, path: &str) -> Result<(u16, String)> {
         let resp = self

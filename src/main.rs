@@ -9,8 +9,8 @@ mod ui;
 
 use anyhow::Result;
 use app::{
-    spawn_destroy_and_reload, spawn_finish, spawn_launch, spawn_list_apps, spawn_oauth,
-    spawn_reconnect, App, Screen,
+    spawn_create, spawn_destroy_and_reload, spawn_finish, spawn_launch, spawn_list_apps,
+    spawn_oauth, spawn_reconnect, App, Screen,
 };
 use crossterm::{
     event::{
@@ -111,6 +111,10 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                 }
                 // En Customize, pegar (o arrastrar) inserta en el campo enfocado:
                 // ruta del logo, o nombre. Útil para drag&drop del archivo.
+                Event::Paste(text) if app.screen == Screen::Create => {
+                    app.repo_input
+                        .push_str(text.split_whitespace().next().unwrap_or("").trim());
+                }
                 Event::Paste(text) if app.screen == Screen::Customize => {
                     let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
                     if app.focus == app::FOCUS_LOGO {
@@ -199,12 +203,7 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             let create = matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
                 || (code == KeyCode::Enter && n == 0);
             if create {
-                app.key_input.clear();
-                app.logo_input.clear();
-                app.accent_idx = 0;
-                app.custom_hex = "#".into();
-                app.focus = 0;
-                app.screen = Screen::Consent;
+                app.start_create();
                 return;
             }
             match code {
@@ -226,6 +225,23 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 _ => {}
             }
         }
+        Screen::Create => match code {
+            KeyCode::Esc => app.screen = Screen::Apps,
+            KeyCode::Backspace => {
+                app.repo_input.pop();
+            }
+            KeyCode::Enter => {
+                let repo = app.repo_input.trim().to_string();
+                if !repo.is_empty() && app.busy.is_none() {
+                    if let Some(client) = app.client.clone() {
+                        app.busy = Some("preparando…".into());
+                        spawn_create(client, repo, tx.clone());
+                    }
+                }
+            }
+            KeyCode::Char(c) if !c.is_whitespace() => app.repo_input.push(c),
+            _ => {}
+        },
         Screen::Consent => match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 app.key_input.clear(); // se reusa como buffer del nombre
@@ -256,8 +272,9 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                         app.app_name = app.key_input.clone();
                         let accent = app::chosen_accent(app);
                         let logo = app.logo_input.clone();
+                        let repo = app.repo_input.clone();
                         app.start_launch();
-                        spawn_launch(client, tx.clone(), app.app_name.clone(), accent, logo);
+                        spawn_launch(client, tx.clone(), repo, app.app_name.clone(), accent, logo);
                     }
                 }
                 // Fila de color.

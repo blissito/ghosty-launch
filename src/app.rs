@@ -94,7 +94,8 @@ fn safe_name(name: &str) -> String {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     KeyEntry,
-    Apps, // panel: lista de tus apps publicadas (CRUD)
+    Apps,   // panel: lista de tus apps publicadas (CRUD)
+    Create, // pega la URL del repo a publicar
     Consent,
     Customize,
     Launching,
@@ -164,6 +165,12 @@ pub enum Msg {
         email: Option<String>,
         apps: Vec<AppEntry>,
     },
+    /// Crear: el repo es estático → empezar publicación al CDN.
+    StaticStart,
+    /// Crear: el repo es una app → ir a Consent (VM), con el repo elegido.
+    AppCreate {
+        repo: String,
+    },
     SandboxCreated {
         id: String,
     },
@@ -217,6 +224,8 @@ pub struct App {
     pub custom_hex: String,
     /// Ruta local o URL del logo (drag&drop pega la ruta).
     pub logo_input: String,
+    /// URL del repo a publicar (pantalla Create).
+    pub repo_input: String,
     pub error: Option<String>,
     pub should_quit: bool,
 }
@@ -249,6 +258,7 @@ impl App {
             focus: 0,
             custom_hex: "#".to_string(),
             logo_input: String::new(),
+            repo_input: String::new(),
             error: None,
             should_quit: false,
         }
@@ -262,6 +272,18 @@ impl App {
     pub fn logout(&mut self) {
         oauth::clear_creds();
         *self = App::new();
+    }
+
+    /// Empezar a crear: limpia la personalización y pide el repo (prefilla el default).
+    pub fn start_create(&mut self) {
+        self.key_input.clear();
+        self.logo_input.clear();
+        self.accent_idx = 0;
+        self.custom_hex = "#".into();
+        self.focus = 0;
+        self.error = None;
+        self.repo_input = App::ref_repo();
+        self.screen = Screen::Create;
     }
 
     /// Avanza la animación de ojos (llamar cada frame). Idle = expresiones random
@@ -314,16 +336,25 @@ impl App {
                 let empty = apps.is_empty();
                 self.apps = apps;
                 if empty {
-                    // Sin apps: el panel sobra → directo a publicar (con buffers limpios).
-                    self.key_input.clear();
-                    self.logo_input.clear();
-                    self.accent_idx = 0;
-                    self.custom_hex = "#".into();
-                    self.focus = 0;
-                    self.screen = Screen::Consent;
+                    // Sin apps: el panel sobra → directo a crear (pega el repo).
+                    self.start_create();
                 } else {
                     self.screen = Screen::Apps;
                 }
+            }
+            Msg::StaticStart => {
+                self.busy = None;
+                self.steps = vec![
+                    Step::new("Clonando el repo"),
+                    Step::new("Creando sitio en el CDN"),
+                    Step::new("Subiendo archivos"),
+                ];
+                self.screen = Screen::Launching;
+            }
+            Msg::AppCreate { repo } => {
+                self.busy = None;
+                self.repo_input = repo;
+                self.screen = Screen::Consent;
             }
             Msg::SandboxCreated { id } => {
                 self.sandbox_id = Some(id);
@@ -551,6 +582,9 @@ async fn resolve_logo(client: &Client, raw: &str) -> String {
 /// lo que falte se auto-detecta (estilo Vercel: build si hay script, npm start).
 #[derive(serde::Deserialize, Default)]
 struct Manifest {
+    /// "static" → CDN, "app" → VM. Si falta, se auto-detecta (package.json → app).
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
     #[serde(default)]
     deploy: Deploy,
 }
@@ -588,17 +622,176 @@ async fn fetch_manifest(ref_repo: &str) -> Manifest {
     Manifest::default()
 }
 
+fn repo_slug(repo: &str) -> String {
+    repo.trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("github.com/")
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .to_string()
+}
+
+/// Estático si `ghosty.toml type="static"`, o si el repo NO tiene `package.json`.
+async fn detect_static(repo: &str) -> bool {
+    let m = fetch_manifest(repo).await;
+    if let Some(k) = m.kind {
+        return k.eq_ignore_ascii_case("static");
+    }
+    let slug = repo_slug(repo);
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    for branch in ["main", "master"] {
+        let url = format!("https://raw.githubusercontent.com/{slug}/{branch}/package.json");
+        if let Ok(r) = http.get(&url).send().await {
+            if r.status().is_success() {
+                return false; // tiene package.json → app
+            }
+        }
+    }
+    true // sin package.json → estático
+}
+
+fn content_type_for(name: &str) -> &'static str {
+    match name
+        .rsplit('.')
+        .next()
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") | Some("mjs") => "application/javascript",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        Some("txt") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+fn collect_files(
+    dir: &std::path::Path,
+    base: &std::path::Path,
+    out: &mut Vec<(String, std::path::PathBuf)>,
+) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if e.file_name() == *".git" {
+                continue;
+            }
+            if p.is_dir() {
+                collect_files(&p, base, out);
+            } else if let Ok(rel) = p.strip_prefix(base) {
+                out.push((rel.to_string_lossy().replace('\\', "/"), p));
+            }
+        }
+    }
+}
+
+/// Crea: detecta tipo y enruta. Estático → publica al CDN; app → va a Consent (VM).
+pub fn spawn_create(client: Client, repo: String, tx: UnboundedSender<Msg>) {
+    tokio::spawn(async move {
+        if !detect_static(&repo).await {
+            let _ = tx.send(Msg::AppCreate { repo });
+            return;
+        }
+        let _ = tx.send(Msg::StaticStart);
+        match publish_static(&client, &repo, &tx).await {
+            Ok(url) => {
+                let _ = tx.send(Msg::Live { url });
+            }
+            Err(e) => {
+                let _ = tx.send(Msg::Step {
+                    idx: 2,
+                    status: StepStatus::Failed,
+                    detail: e.to_string(),
+                });
+                let _ = tx.send(Msg::Failed {
+                    error: e.to_string(),
+                });
+            }
+        }
+    });
+}
+
+/// Publica un sitio estático al CDN de EasyBits: clone local → crear website → subir.
+async fn publish_static(
+    client: &Client,
+    repo: &str,
+    tx: &UnboundedSender<Msg>,
+) -> anyhow::Result<String> {
+    let step = |idx, status, detail: &str| {
+        let _ = tx.send(Msg::Step {
+            idx,
+            status,
+            detail: detail.to_string(),
+        });
+    };
+
+    step(0, StepStatus::Running, "");
+    let dir = std::env::temp_dir().join("ghosty-launch-static");
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    let ok = tokio::process::Command::new("git")
+        .args(["clone", "--depth", "1", repo, &dir.to_string_lossy()])
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        anyhow::bail!("git clone falló (¿el repo es público?)");
+    }
+    step(0, StepStatus::Done, "repo clonado");
+
+    step(1, StepStatus::Running, "");
+    let name = repo_slug(repo)
+        .rsplit('/')
+        .next()
+        .unwrap_or("sitio")
+        .to_string();
+    let (id, url) = client.create_website(&name).await?;
+    step(1, StepStatus::Done, "sitio creado");
+
+    step(2, StepStatus::Running, "");
+    let mut files = Vec::new();
+    collect_files(&dir, &dir, &mut files);
+    if files.is_empty() {
+        anyhow::bail!("el repo no tiene archivos");
+    }
+    for (rel, abs) in &files {
+        let bytes = tokio::fs::read(abs).await.unwrap_or_default();
+        client
+            .upload_website_file(&id, rel, content_type_for(rel), bytes)
+            .await?;
+    }
+    step(
+        2,
+        StepStatus::Done,
+        format!("{} archivos al CDN", files.len()).as_str(),
+    );
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    Ok(url)
+}
+
 /// Corre el pipeline completo en background, reportando cada paso.
 /// `app_name`/`accent`/`logo` se inyectan como env a la app (personalización real).
 pub fn spawn_launch(
     client: Client,
     tx: UnboundedSender<Msg>,
+    repo: String,
     app_name: String,
     accent: String,
     logo: String,
 ) {
     tokio::spawn(async move {
-        let ref_repo = App::ref_repo();
+        let ref_repo = repo;
         let app_name = safe_name(&app_name);
         let logo_url = resolve_logo(&client, &logo).await;
         let manifest = fetch_manifest(&ref_repo).await;

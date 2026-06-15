@@ -23,21 +23,53 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/blissito/ghosty-launch/mai
 
 ## Cómo se usa
 
-1. **Conéctate** — `enter` abre tu navegador para autorizar con EasyBits (OAuth, sin pegar llaves). La sesión se guarda; el próximo run reconecta solo.
-2. **Personaliza** — nombre, color de acento (presets o hex custom) y logo (ruta/URL, o arrastra el archivo).
-3. **Publica** — Ghosty levanta tu VM, clona el repo en `/app`, instala, arranca y expone el puerto.
-4. **En vivo** — tu URL `https://sb-…easybits.cloud`. `o` abre, `r` re-publica, `d` destruye.
+1. **Conéctate** — `enter` abre tu navegador para autorizar con EasyBits (OAuth, sin pegar llaves). La sesión se guarda; el próximo run reconecta solo. (`x` cierra sesión / cambia de cuenta.)
+2. **Repo** — pega la URL de tu repo de GitHub (público).
+3. **Personaliza** (solo apps) — nombre, color de acento y logo.
+4. **Publica** — según el tipo de repo (ver abajo).
+5. **En vivo** — tu URL pública. `o` abre, `b` vuelve al panel, `d` destruye.
 
-**Lo único que necesitas:** una cuenta EasyBits (<a href="https://www.easybits.cloud/login" target="_blank" rel="noopener noreferrer">signup</a>). 
+**Lo único que necesitas:** una cuenta EasyBits (<a href="https://www.easybits.cloud/login" target="_blank" rel="noopener noreferrer">signup</a>).
 
-⚠️ La VM publicada es **persistente (always-on) = cargo mensual** en tu cuenta EasyBits hasta que la destruyas (`d`).
+## Usa Ghosty Launch en tu repo
+
+Ghosty Launch detecta qué publica y elige el destino:
+
+| Tipo | Detección | Destino | Costo |
+|---|---|---|---|
+| **Estático** (HTML/CSS/JS) | sin `package.json`, o `ghosty.toml type="static"` | **CDN** `easybits.cloud/s/<slug>` | sin cargo |
+| **App con server** (Node) | hay `package.json` | **VM persistente** | cargo mensual |
+
+Requisitos:
+- Repo **público** (el clone no usa token aún).
+- Apps: deben escuchar en **`0.0.0.0:$PORT`** (Ghosty inyecta `PORT=3000`), no en `localhost`.
+
+### Contrato `ghosty.toml` (opcional, en la raíz del repo)
+
+Solo lo necesitas si quieres forzar el tipo o dar una receta de build/arranque. Si falta, se auto-detecta.
+
+```toml
+# Forzar estático:
+type = "static"
+
+# O una app con receta de deploy (todo opcional; lo que falte se auto-detecta):
+type = "app"
+[deploy]
+install = "npm ci"
+build   = "npm run build"        # se corre solo si existe el script
+start   = "npm start"
+```
+
+Ejemplo, sitio estático sin build → **no necesitas archivo** (auto-detect). Si tu HTML necesita servirse con algo raro, declara `[deploy].start`.
+
+Apps personalizadas leen `APP_NAME` / `APP_ACCENT` / `APP_LOGO` del entorno (Ghosty los inyecta). Ver `examples/node-hello/`.
 
 ## Configuración (opcional)
 
 | Var | Default | Qué hace |
 |---|---|---|
 | `EASYBITS_BASE_URL` | `https://www.easybits.cloud` | Apuntar a un EasyBits local/dev |
-| `GHOSTY_REF_REPO` | `blissito/ghosty-ref-node` | Repo a clonar y desplegar en la VM |
+| `GHOSTY_REF_REPO` | `blissito/ghosty-ref-node` | Repo **prellenado** en la pantalla "repo" (lo puedes cambiar ahí) |
 
 La app de referencia (server Node, lee `APP_NAME`/`APP_ACCENT`/`APP_LOGO`) está en `examples/node-hello/`.
 

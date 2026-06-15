@@ -29,6 +29,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let (title, content) = match app.screen {
         Screen::KeyEntry => ("conexión", key_entry(app)),
         Screen::Apps => ("tus apps", apps(app)),
+        Screen::Create => ("repo", create_screen(app)),
         Screen::Consent => ("consentimiento", consent(app)),
         Screen::Customize => ("personaliza", customize(app)),
         Screen::Launching => ("publicando", launch(app)),
@@ -262,6 +263,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("x", "cerrar sesión"),
             ("q", "salir"),
         ],
+        Screen::Create => &[("enter", "publicar"), ("esc", "volver")],
         Screen::Consent => &[("y", "publicar"), ("x", "cerrar sesión"), ("q", "salir")],
         Screen::Customize => &[("enter", "siguiente"), ("⇥", "campo"), ("esc", "volver")],
         Screen::Launching => &[("esc", "cancelar")],
@@ -417,6 +419,49 @@ fn key_entry(app: &App) -> Vec<Line<'static>> {
         ))
     });
     out
+}
+
+fn create_screen(app: &App) -> Vec<Line<'static>> {
+    if let Some(b) = &app.busy {
+        return vec![
+            Line::from(Span::styled(
+                "Preparando…",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("{} {b}", SPINNER[(app.tick % 10) as usize]),
+                Style::default().fg(ACCENT),
+            )),
+        ];
+    }
+    let cursor = if (app.tick / 8).is_multiple_of(2) {
+        "▏"
+    } else {
+        " "
+    };
+    let hint = if let Some(e) = &app.error {
+        Span::styled(e.clone(), Style::default().fg(ERROR))
+    } else {
+        Span::styled(
+            "URL de GitHub público · estático → CDN, app → VM",
+            Style::default().fg(DIM),
+        )
+    };
+    vec![
+        Line::from(Span::styled(
+            "¿Qué repo publicas?",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("› ", Style::default().fg(ACCENT)),
+            Span::styled(app.repo_input.clone(), Style::default().fg(TEXT)),
+            Span::styled(cursor.to_string(), Style::default().fg(ACCENT)),
+        ]),
+        Line::from(""),
+        Line::from(hint),
+    ]
 }
 
 fn consent(app: &App) -> Vec<Line<'static>> {
