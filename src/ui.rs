@@ -244,7 +244,7 @@ fn lerp(a: u8, b: u8, t: f32) -> u8 {
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let chips: &[(&str, &str)] = match app.screen {
         Screen::KeyEntry if app.auth_busy => &[("esc", "cancelar")],
-        Screen::KeyEntry if app.paste_mode => &[("enter", "validar"), ("esc", "salir")],
+        Screen::KeyEntry if app.paste_mode => &[("enter", "validar"), ("esc", "volver")],
         Screen::KeyEntry => &[
             ("enter", "conectar"),
             ("k", "pegar llave"),

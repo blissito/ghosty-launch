@@ -150,7 +150,12 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             }
             if app.paste_mode {
                 match code {
-                    KeyCode::Esc => app.should_quit = true,
+                    KeyCode::Esc => {
+                        // Volver a la elección (OAuth / pegar llave), no salir.
+                        app.paste_mode = false;
+                        app.key_input.clear();
+                        app.error = None;
+                    }
                     KeyCode::Enter => submit_key(app, tx),
                     KeyCode::Backspace => {
                         app.key_input.pop();
