@@ -250,7 +250,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("k", "pegar llave"),
             ("esc", "salir"),
         ],
-        Screen::Apps if app.apps.is_empty() => &[("enter", "publicar"), ("q", "salir")],
+        Screen::Apps if app.apps.is_empty() => &[
+            ("enter", "publicar"),
+            ("x", "cerrar sesión"),
+            ("q", "salir"),
+        ],
         Screen::Apps => &[
             ("enter", "ver"),
             ("c", "crear"),
@@ -258,7 +262,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("x", "cerrar sesión"),
             ("q", "salir"),
         ],
-        Screen::Consent => &[("y", "publicar"), ("n", "volver")],
+        Screen::Consent => &[("y", "publicar"), ("x", "cerrar sesión"), ("q", "salir")],
         Screen::Customize => &[("enter", "siguiente"), ("⇥", "campo"), ("esc", "volver")],
         Screen::Launching => &[("esc", "cancelar")],
         Screen::Live => &[

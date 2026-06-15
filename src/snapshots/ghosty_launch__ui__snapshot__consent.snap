@@ -21,4 +21,4 @@ expression: "render_str(&app, 78, 20)"
            │                                                      │
            ╰──────────────────────────────────────────────────────╯
 
-   y publicar    n volver
+   y publicar    x cerrar sesión    q salir

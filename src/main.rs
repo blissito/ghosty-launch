@@ -229,6 +229,8 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 app.screen = Screen::Apps;
             }
+            KeyCode::Char('x') | KeyCode::Char('X') => app.logout(),
+            KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
             _ => {}
         },
         Screen::Customize => {
