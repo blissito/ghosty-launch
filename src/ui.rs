@@ -196,21 +196,38 @@ fn hero(app: &App) -> Vec<Line<'static>> {
     out
 }
 
-/// Ojos en idle: ciclo lento de expresiones (neutral, mira der/izq, feliz) con un
-/// parpadeo breve entre cada una. Da sensación de "vivo" sin distraer.
+/// Timeline de ojos en idle: (glifo, duración en ticks). Da vida sin distraer:
+/// mira al frente/lados/arriba/abajo, feliz, con parpadeos breves entre estados.
+const MASCOT_EYE_TIMELINE: &[(&str, u64)] = &[
+    ("●", 16), // al frente (reposo)
+    ("─", 2),  // parpadeo
+    ("●", 14),
+    ("◑", 5), // mira a la derecha
+    ("●", 12),
+    ("─", 2),
+    ("●", 10),
+    ("◐", 5), // mira a la izquierda
+    ("●", 12),
+    ("◕", 6), // feliz
+    ("●", 10),
+    ("─", 2),
+    ("●", 10),
+    ("◓", 4), // mira arriba
+    ("●", 12),
+    ("◒", 4), // mira abajo
+    ("●", 14),
+];
+
 fn idle_eye(tick: u64) -> &'static str {
-    const PHASE: u64 = 38; // ~1.9s por expresión (poll ~50ms)
-    if tick % PHASE >= PHASE - 2 {
-        return "─"; // parpadeo entre expresiones
+    let total: u64 = MASCOT_EYE_TIMELINE.iter().map(|(_, d)| *d).sum();
+    let mut pos = tick % total.max(1);
+    for (eye, dur) in MASCOT_EYE_TIMELINE {
+        if pos < *dur {
+            return eye;
+        }
+        pos -= *dur;
     }
-    match (tick / PHASE) % 6 {
-        0 => "●", // neutral
-        1 => "◑", // mira a la derecha
-        2 => "●", // neutral
-        3 => "◐", // mira a la izquierda
-        4 => "◕", // feliz
-        _ => "●",
-    }
+    "●"
 }
 
 /// Gradiente animado por carácter (una onda de brillo que recorre el texto).
@@ -271,6 +288,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("enter", "ver"),
             ("c", "crear"),
             ("d", "borrar"),
+            ("x", "cerrar sesión"),
             ("q", "salir"),
         ],
         Screen::Consent => &[("y", "publicar"), ("n", "volver")],
@@ -483,6 +501,10 @@ fn apps(app: &App) -> Vec<Line<'static>> {
         Line::from(Span::styled(
             format!("Tus apps ({})", app.apps.len()),
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!("cuenta: {}", app.email.as_deref().unwrap_or("—")),
+            Style::default().fg(DIM),
         )),
         Line::from(""),
     ];

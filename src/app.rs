@@ -230,6 +230,12 @@ impl App {
         std::env::var("GHOSTY_REF_REPO").unwrap_or_else(|_| DEFAULT_REF_REPO.to_string())
     }
 
+    /// Cerrar sesión: borra credenciales y vuelve a estado fresco (pantalla de conexión).
+    pub fn logout(&mut self) {
+        oauth::clear_creds();
+        *self = App::new();
+    }
+
     /// Aplica un mensaje de tarea async al estado.
     pub fn apply(&mut self, msg: Msg) {
         match msg {

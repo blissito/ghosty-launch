@@ -5,7 +5,6 @@ expression: "render_str(&app, 78, 22)"
 
 
 
-
            ╭ tus apps ────────────────────────────────────────────╮
            │                                                      │
            │                        ▄████▄                        │
@@ -14,6 +13,7 @@ expression: "render_str(&app, 78, 22)"
            │         Ghosty Launch  ·  que lo haga Ghosty         │
            │                                                      │
            │  Tus apps (2)                                        │
+           │  cuenta: —                                           │
            │                                                      │
            │  › ● Mi Tienda                                       │
            │        https://sb-a-3000.sandboxes.easybits.cloud    │
@@ -23,4 +23,4 @@ expression: "render_str(&app, 78, 22)"
 
 
 
-   enter ver    c crear    d borrar    q salir
+   enter ver    c crear    d borrar    x cerrar sesión    q salir

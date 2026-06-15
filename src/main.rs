@@ -215,6 +215,7 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                     let _ = open_browser(&app.apps[app.apps_cursor].url);
                 }
                 KeyCode::Char('d') if n > 0 => app.confirm_destroy = true,
+                KeyCode::Char('x') | KeyCode::Char('X') => app.logout(),
                 _ => {}
             }
         }
