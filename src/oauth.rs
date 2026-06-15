@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -90,6 +90,14 @@ fn rand_b64(n: usize) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(buf))
 }
 
+/// Cliente HTTP con timeout — evita cuelgues si /oauth/token no responde.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let cmd = "open";
@@ -141,7 +149,7 @@ pub async fn run_oauth() -> Result<Creds> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}/cb");
-    let http = reqwest::Client::new();
+    let http = http_client();
 
     // 1. Registro dinámico de cliente público.
     let reg: Value = http
@@ -216,7 +224,7 @@ pub async fn refresh(creds: &Creds) -> Result<Creds> {
         .client_id
         .as_deref()
         .ok_or_else(|| anyhow!("sin client_id"))?;
-    let http = reqwest::Client::new();
+    let http = http_client();
     let tok: Value = http
         .post(format!("{base}/oauth/token"))
         .form(&[

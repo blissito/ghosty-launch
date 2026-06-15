@@ -379,7 +379,18 @@ async fn finish_with_token(token: String, tx: UnboundedSender<Msg>) {
     });
 }
 
+/// URL pública de una VM expuesta, reconstruida del id+puerto (sin red).
+/// Formato fijo de sandbox-host: `https://sb-<uuid>-<port>.sandboxes.easybits.cloud`.
+pub fn public_url(id: &str, port: u16) -> String {
+    format!(
+        "https://{}-{}.sandboxes.easybits.cloud",
+        id.replacen("sb_", "sb-", 1),
+        port
+    )
+}
+
 /// Lista las apps que publicó Ghosty Launch (VMs `gl:*` running) con su URL.
+/// Reconstruye la URL (no llama expose por app) → reconexión con UNA sola request.
 pub async fn list_apps(client: &Client) -> Vec<AppEntry> {
     let list = match client.list_sandboxes().await {
         Ok(l) => l,
@@ -393,13 +404,11 @@ pub async fn list_apps(client: &Client) -> Vec<AppEntry> {
             .map(|n| n.starts_with(APP_PREFIX))
             .unwrap_or(false);
         if is_ours && s.status == "running" {
-            if let Ok(exp) = client.expose(&s.sandbox_id, APP_PORT).await {
-                out.push(AppEntry {
-                    id: s.sandbox_id,
-                    name: display_name(&s.name),
-                    url: exp.url,
-                });
-            }
+            out.push(AppEntry {
+                name: display_name(&s.name),
+                url: public_url(&s.sandbox_id, APP_PORT),
+                id: s.sandbox_id,
+            });
         }
     }
     out
