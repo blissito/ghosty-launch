@@ -176,19 +176,22 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
         }
         Screen::Apps => {
             let n = app.apps.len();
+            // Crear: tecla `c`, o `enter` cuando no hay apps (nada que seleccionar).
+            let create = matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
+                || (code == KeyCode::Enter && n == 0);
+            if create {
+                app.key_input.clear();
+                app.logo_input.clear();
+                app.accent_idx = 0;
+                app.custom_hex = "#".into();
+                app.focus = 0;
+                app.screen = Screen::Consent;
+                return;
+            }
             match code {
                 KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
                 KeyCode::Up if n > 0 => app.apps_cursor = (app.apps_cursor + n - 1) % n,
                 KeyCode::Down if n > 0 => app.apps_cursor = (app.apps_cursor + 1) % n,
-                // Nueva app: limpia la personalización y entra al flujo de publicar.
-                KeyCode::Char('n') | KeyCode::Char('N') => {
-                    app.key_input.clear();
-                    app.logo_input.clear();
-                    app.accent_idx = 0;
-                    app.custom_hex = "#".into();
-                    app.focus = 0;
-                    app.screen = Screen::Consent;
-                }
                 KeyCode::Enter if n > 0 => {
                     let a = &app.apps[app.apps_cursor];
                     app.url = Some(a.url.clone());

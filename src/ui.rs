@@ -217,10 +217,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("k", "pegar llave"),
             ("esc", "salir"),
         ],
-        Screen::Apps if app.apps.is_empty() => &[("n", "crear"), ("q", "salir")],
+        Screen::Apps if app.apps.is_empty() => &[("enter", "publicar"), ("q", "salir")],
         Screen::Apps => &[
             ("enter", "ver"),
-            ("n", "nueva"),
+            ("c", "crear"),
             ("d", "borrar"),
             ("q", "salir"),
         ],
@@ -423,7 +423,7 @@ fn apps(app: &App) -> Vec<Line<'static>> {
             Line::from(""),
             Line::from(vec![
                 Span::styled(
-                    "  n  ",
+                    "  enter  ",
                     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("publicar una", Style::default().fg(TEXT)),

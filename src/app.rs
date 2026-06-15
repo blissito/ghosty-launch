@@ -244,8 +244,19 @@ impl App {
                 self.client = Some(client);
                 self.email = email;
                 self.apps_cursor = self.apps_cursor.min(apps.len().saturating_sub(1));
+                let empty = apps.is_empty();
                 self.apps = apps;
-                self.screen = Screen::Apps;
+                if empty {
+                    // Sin apps: el panel sobra → directo a publicar (con buffers limpios).
+                    self.key_input.clear();
+                    self.logo_input.clear();
+                    self.accent_idx = 0;
+                    self.custom_hex = "#".into();
+                    self.focus = 0;
+                    self.screen = Screen::Consent;
+                } else {
+                    self.screen = Screen::Apps;
+                }
             }
             Msg::SandboxCreated { id } => {
                 self.sandbox_id = Some(id);
