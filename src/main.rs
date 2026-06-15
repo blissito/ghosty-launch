@@ -210,14 +210,14 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
                 KeyCode::Up if n > 0 => app.apps_cursor = (app.apps_cursor + n - 1) % n,
                 KeyCode::Down if n > 0 => app.apps_cursor = (app.apps_cursor + 1) % n,
-                KeyCode::Enter if n > 0 => {
+                KeyCode::Enter if n > 0 && app.apps[app.apps_cursor].running => {
                     let a = &app.apps[app.apps_cursor];
                     app.url = Some(a.url.clone());
                     app.sandbox_id = Some(a.id.clone());
                     app.live_at = None; // ver existente → sin confetti
                     app.screen = Screen::Live;
                 }
-                KeyCode::Char('o') if n > 0 => {
+                KeyCode::Char('o') if n > 0 && app.apps[app.apps_cursor].running => {
                     let _ = open_browser(&app.apps[app.apps_cursor].url);
                 }
                 KeyCode::Char('d') if n > 0 => app.confirm_destroy = true,

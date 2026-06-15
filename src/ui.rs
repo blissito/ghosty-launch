@@ -538,16 +538,26 @@ fn apps(app: &App) -> Vec<Line<'static>> {
         } else {
             Style::default().fg(TEXT)
         };
+        let (icon, icon_col) = if a.running {
+            ("●", if sel { ACCENT } else { SUCCESS })
+        } else {
+            ("✕", ERROR)
+        };
         out.push(Line::from(vec![
             Span::styled(
-                if sel { "› ● " } else { "  ● " }.to_string(),
-                Style::default().fg(if sel { ACCENT } else { SUCCESS }),
+                format!("{} {icon} ", if sel { "›" } else { " " }),
+                Style::default().fg(icon_col),
             ),
             Span::styled(a.name.clone(), name_style),
         ]));
         if sel {
+            let detail = if a.running {
+                a.url.clone()
+            } else {
+                "detenida — d para borrar".to_string()
+            };
             out.push(Line::from(Span::styled(
-                format!("      {}", a.url),
+                format!("      {detail}"),
                 Style::default().fg(DIM),
             )));
         }
@@ -854,11 +864,13 @@ mod snapshot {
                 id: "sb_a".into(),
                 name: "Mi Tienda".into(),
                 url: "https://sb-a-3000.sandboxes.easybits.cloud".into(),
+                running: true,
             },
             AppEntry {
                 id: "sb_b".into(),
                 name: "Blog".into(),
                 url: "https://sb-b-3000.sandboxes.easybits.cloud".into(),
+                running: true,
             },
         ];
         insta::assert_snapshot!(render_str(&app, 78, 22));

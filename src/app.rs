@@ -125,6 +125,7 @@ pub struct AppEntry {
     pub id: String,
     pub name: String,
     pub url: String,
+    pub running: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -491,11 +492,17 @@ pub async fn list_apps(client: &Client) -> Vec<AppEntry> {
             .as_deref()
             .map(|n| n.starts_with(APP_PREFIX))
             .unwrap_or(false);
-        if is_ours && s.status == "running" {
+        if is_ours {
+            let running = s.status == "running";
             out.push(AppEntry {
                 name: display_name(&s.name),
-                url: public_url(&s.sandbox_id, APP_PORT),
+                url: if running {
+                    public_url(&s.sandbox_id, APP_PORT)
+                } else {
+                    String::new()
+                },
                 id: s.sandbox_id,
+                running,
             });
         }
     }
