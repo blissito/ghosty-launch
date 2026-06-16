@@ -46,6 +46,10 @@ async fn main() -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("uso: --agent-fix <sandbox_id>"))?;
         return debug::agent_fix(id).await;
     }
+    // Prueba aislada de auth contra el endpoint de inferencia de EasyBits.
+    if std::env::args().any(|a| a == "--ping-llm") {
+        return debug::ping_llm().await;
+    }
     // Destruye una VM por id (cleanup de pruebas).
     if let Some(pos) = std::env::args().position(|a| a == "--destroy") {
         let id = std::env::args()

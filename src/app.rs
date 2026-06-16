@@ -739,7 +739,10 @@ pub fn spawn_reconnect(creds: Creds, tx: UnboundedSender<Msg>) {
         });
         let creds = if creds.is_expired() {
             match oauth::refresh(&creds).await {
-                Ok(c) => c,
+                Ok(c) => {
+                    oauth::save_creds(&c); // persiste el par rotado (si no, se desincroniza)
+                    c
+                }
                 Err(e) => {
                     oauth::clear_creds(); // credenciales muertas → fuerza OAuth limpio
                     let _ = tx.send(Msg::ValidateFailed {

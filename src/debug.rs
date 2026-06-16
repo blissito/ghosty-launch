@@ -230,6 +230,36 @@ pub async fn agent_fix(sandbox_id: String) -> Result<()> {
     Ok(())
 }
 
+/// Prueba aislada de auth: ¿el bearer actual (OAuth JWT, refrescado) es aceptado por el
+/// endpoint de inferencia de EasyBits? Uso: cargo run -- --ping-llm
+pub async fn ping_llm() -> Result<()> {
+    use loop_engine::client::DeepSeekClient;
+    use loop_engine::config::{ApiProvider, Config};
+    use loop_engine::llm_client::LlmClient;
+    use loop_engine::models::{ContentBlock, Message, MessageRequest};
+
+    let client = build_client().await?;
+    let b = client.bearer();
+    println!("bearer: {}… (len {}, {})", &b[..b.len().min(12)], b.len(),
+        if b.matches('.').count() == 2 { "JWT" } else { "key" });
+    println!("llm base: {}", client.llm_base_url());
+
+    let cfg = Config::for_endpoint(b, client.llm_base_url(), ApiProvider::Deepseek, "deepseek-v4-pro");
+    let llm = DeepSeekClient::new(&cfg)?;
+    let req = MessageRequest {
+        model: "deepseek-v4-pro".into(),
+        messages: vec![Message { role: "user".into(), content: vec![ContentBlock::Text { text: "di: hola".into(), cache_control: None }] }],
+        max_tokens: 16,
+        system: None, tools: None, tool_choice: None, metadata: None, thinking: None,
+        reasoning_effort: None, stream: Some(false), temperature: None, top_p: None,
+    };
+    match llm.create_message(req).await {
+        Ok(r) => println!("✓ INFERENCIA OK: {:?}", r.content),
+        Err(e) => println!("✗ INFERENCIA FALLÓ: {e}"),
+    }
+    Ok(())
+}
+
 /// Destruye una VM por id (cleanup de pruebas). Uso: cargo run -- --destroy sb_xxx
 pub async fn destroy(sandbox_id: String) -> Result<()> {
     let client = build_client().await?;
@@ -249,6 +279,7 @@ async fn build_client() -> Result<Client> {
         creds = crate::oauth::refresh(&creds)
             .await
             .map_err(|e| anyhow!("refresh de token falló: {e}"))?;
+        crate::oauth::save_creds(&creds); // persiste el par rotado (no desincronizar)
     }
     Client::new(creds.access_token)
 }

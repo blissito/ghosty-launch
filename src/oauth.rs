@@ -62,7 +62,7 @@ pub fn load_creds() -> Option<Creds> {
     serde_json::from_str(&data).ok()
 }
 
-fn save_creds(creds: &Creds) {
+pub fn save_creds(creds: &Creds) {
     let Some(path) = creds_path() else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -76,6 +76,22 @@ fn save_creds(creds: &Creds) {
             }
         }
     }
+}
+
+/// Devuelve un access_token FRESCO de EasyBits (refresca si está por vencer y **persiste**
+/// el nuevo par). `None` si no hay credenciales OAuth guardadas (p.ej. auth por eb_sk key).
+/// Crítico: el endpoint de inferencia rechaza tokens rancios, y refrescar sin guardar rota
+/// el refresh_token server-side y desincroniza `credentials.json`.
+pub async fn fresh_bearer() -> Option<String> {
+    let creds = load_creds()?;
+    let creds = if creds.is_expired() {
+        let fresh = refresh(&creds).await.ok()?;
+        save_creds(&fresh);
+        fresh
+    } else {
+        creds
+    };
+    Some(creds.access_token)
 }
 
 pub fn clear_creds() {

@@ -112,10 +112,15 @@ async fn run(
     fail_error: &str,
     tx: &UnboundedSender<Msg>,
 ) -> Outcome {
-    // Inferencia vía EasyBits: mismo bearer que el `Client`, endpoint /api/v2/llm/v1.
+    // Inferencia vía EasyBits, endpoint /api/v2/llm/v1. Usamos un bearer FRESCO (el del
+    // `Client` puede estar rancio y el endpoint LLM lo rechaza); fallback al del Client
+    // cuando la auth es por eb_sk key (sin creds OAuth que refrescar).
     let model = MODEL_DEFAULT.to_string();
+    let bearer = crate::oauth::fresh_bearer()
+        .await
+        .unwrap_or_else(|| client.bearer().to_string());
     let cfg = Config::for_endpoint(
-        client.bearer(),
+        bearer,
         client.llm_base_url(),
         ApiProvider::Deepseek,
         model.clone(),
