@@ -433,6 +433,12 @@ impl App {
     }
 
     pub fn start_launch(&mut self) {
+        // Limpia el estado de un deploy anterior — si no, la pantalla Launching
+        // muestra el "tu app está en vivo" + URL del proyecto previo.
+        self.url = None;
+        self.live_at = None;
+        self.sandbox_id = None;
+        self.confirm_destroy = false;
         self.steps = vec![
             Step::new("Creando VM persistente"),
             Step::new("Clonando + instalando + arrancando"),
