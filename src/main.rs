@@ -357,10 +357,14 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                     if let Some(client) = app.client.clone() {
                         let envs = app.envs.clone();
                         if let Some(id) = app.reconfig_id.clone() {
-                            // Reconfigurar: reiniciar la VM existente con las envs.
-                            let name = app.app_name.clone();
-                            app.start_reconfigure();
-                            spawn_reconfigure(client, tx.clone(), id, name, envs);
+                            // Reconfigurar: solo reinicia si HAY variables que aplicar
+                            // (si no, un enter en vacío reiniciaría sin cambios y
+                            // mataría la app — justo lo que no queremos).
+                            if !envs.is_empty() {
+                                let name = app.app_name.clone();
+                                app.start_reconfigure();
+                                spawn_reconfigure(client, tx.clone(), id, name, envs);
+                            }
                         } else {
                             // Deploy fresco.
                             let accent = app::chosen_accent(app);

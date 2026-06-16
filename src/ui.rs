@@ -738,7 +738,12 @@ fn envs_screen(app: &App) -> Vec<Line<'static>> {
 
     out.push(Line::from(""));
     let last = if reconfig {
-        "enter agrega · clave sin valor la quita · enter vacío reinicia"
+        if app.envs.is_empty() {
+            // Sin variables no hay nada que aplicar: no reiniciamos por enter vacío.
+            "agrega al menos una variable (CLAVE=valor) para reiniciar"
+        } else {
+            "enter agrega · clave sin valor la quita · enter vacío reinicia"
+        }
     } else {
         "enter agrega · clave sin valor la quita · enter vacío publica"
     };
