@@ -303,6 +303,26 @@ impl App {
         }
     }
 
+    /// Descarta el error y limpia el estado del flujo (steps/busy/confirm).
+    /// Devuelve true si hay sesión (el caller recarga el panel); false → al inicio.
+    pub fn dismiss_error(&mut self) -> bool {
+        self.error = None;
+        self.steps.clear();
+        self.busy = None;
+        self.confirm_destroy = false;
+        self.url = None;
+        self.sandbox_id = None;
+        self.live_at = None;
+        if self.client.is_some() {
+            self.busy = Some("cargando…".into());
+            self.screen = Screen::Apps;
+            true
+        } else {
+            self.screen = Screen::KeyEntry;
+            false
+        }
+    }
+
     /// Empezar a crear: limpia la personalización y pide el repo (prefilla el default).
     pub fn start_create(&mut self) {
         self.key_input.clear();
@@ -622,12 +642,20 @@ struct Manifest {
     kind: Option<String>,
     #[serde(default)]
     deploy: Deploy,
+    #[serde(default)]
+    resources: Resources,
 }
 #[derive(serde::Deserialize, Default)]
 struct Deploy {
     install: Option<String>,
     build: Option<String>,
     start: Option<String>,
+}
+#[derive(serde::Deserialize, Default)]
+struct Resources {
+    /// Clase de VM: "s" | "m" | "l" | "xl". Override explícito gana sobre la
+    /// auto-detección por peso del repo.
+    size: Option<String>,
 }
 
 /// Baja `ghosty.toml` del repo (raw GitHub). Sin manifiesto → Default (auto-detect).
@@ -687,6 +715,71 @@ async fn detect_static(repo: &str) -> bool {
         }
     }
     true // sin package.json → estático
+}
+
+/// Elige la clase de VM (s/m/l/xl) según el peso del repo. El override explícito
+/// de `ghosty.toml [resources] size` gana. Heurística por package.json:
+/// - sin build y ≤30 deps → s
+/// - con build y ≤60 deps → m
+/// - ≥60 deps o bundler pesado conocido → l
+/// - next / monorepo (workspaces) / ≥120 deps → xl
+async fn detect_size(repo: &str) -> &'static str {
+    let m = fetch_manifest(repo).await;
+    if let Some(s) = m.resources.size {
+        return match s.to_ascii_lowercase().as_str() {
+            "m" => "m",
+            "l" => "l",
+            "xl" => "xl",
+            _ => "s",
+        };
+    }
+    let slug = repo_slug(repo);
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut pkg = String::new();
+    for branch in ["main", "master"] {
+        let url = format!("https://raw.githubusercontent.com/{slug}/{branch}/package.json");
+        if let Ok(r) = http.get(&url).send().await {
+            if r.status().is_success() {
+                if let Ok(t) = r.text().await {
+                    pkg = t;
+                    break;
+                }
+            }
+        }
+    }
+    if pkg.is_empty() {
+        return "s";
+    }
+    let json: serde_json::Value = serde_json::from_str(&pkg).unwrap_or(serde_json::Value::Null);
+    let count = |k: &str| {
+        json.get(k)
+            .and_then(|v| v.as_object())
+            .map(|o| o.len())
+            .unwrap_or(0)
+    };
+    let deps = count("dependencies") + count("devDependencies");
+    let has_build = json
+        .get("scripts")
+        .and_then(|s| s.get("build"))
+        .is_some();
+    let has_workspaces = json.get("workspaces").is_some();
+    let heavy = |name: &str| pkg.contains(&format!("\"{name}\""));
+    let has_next = heavy("next");
+    let heavy_bundler =
+        heavy("vite") || heavy("@react-router/dev") || heavy("webpack") || heavy("@excalidraw/excalidraw");
+
+    if has_next || has_workspaces || deps >= 120 {
+        "xl"
+    } else if deps >= 60 || heavy_bundler {
+        "l"
+    } else if has_build && deps <= 60 {
+        "m"
+    } else {
+        "s"
+    }
 }
 
 fn content_type_for(name: &str) -> &'static str {
@@ -840,15 +933,17 @@ pub fn spawn_launch(
         let app_name = safe_name(&app_name);
         let logo_url = resolve_logo(&client, &logo).await;
         let manifest = fetch_manifest(&ref_repo).await;
+        // Clase de VM según el peso del repo (s/m/l/xl). m+ trae un disco /app.
+        let size = detect_size(&ref_repo).await;
 
         // Paso 0 — crear VM persistente + poll hasta running.
         let _ = tx.send(Msg::Step {
             idx: 0,
             status: StepStatus::Running,
-            detail: String::new(),
+            detail: format!("VM tamaño {size}"),
         });
         let sandbox = match client
-            .create_sandbox(TEMPLATE, true, &marker_name(&app_name))
+            .create_sandbox(TEMPLATE, true, &marker_name(&app_name), size)
             .await
         {
             Ok(s) => s,
@@ -919,43 +1014,53 @@ pub fn spawn_launch(
             detail: String::new(),
         });
         // Receta del contrato (ghosty.toml) o auto-detect.
+        // Auto-install: SIN --omit=dev — el build (vite/RRv7) necesita devDeps como
+        // @react-router/dev. Tras el build podamos devDeps para liberar disco.
+        let auto_install = manifest.deploy.install.is_none();
         let install = manifest.deploy.install.clone().unwrap_or_else(|| {
-            "if [ -f package-lock.json ]; then npm ci --omit=dev || npm install --omit=dev; else npm install --omit=dev; fi".into()
+            "if [ -f package-lock.json ]; then npm ci || npm install; else npm install; fi".into()
         });
         let build_step = match manifest.deploy.build.clone() {
             Some(b) => format!("{b}; "),
             // Auto-detect: corre el build solo si package.json declara script `build`.
             None => "if node -e \"process.exit(require('./package.json').scripts&&require('./package.json').scripts.build?0:1)\" 2>/dev/null; then npm run build; fi; ".into(),
         };
+        // En auto-install podamos devDeps tras el build (igual que el Dockerfile).
+        let prune = if auto_install {
+            "npm prune --omit=dev 2>/dev/null || true; "
+        } else {
+            ""
+        };
         let start = manifest
             .deploy
             .start
             .clone()
             .unwrap_or_else(|| "npm start".into());
+        // Con tamaño m+ EasyBits adjunta un volumen ext4 en /app (no vacío:
+        // lost+found) → clonar en /app/src para que `git clone` no falle. Con "s"
+        // no hay volumen, /app es directorio normal del rootfs.
+        let workdir = if size == "s" { "/app" } else { "/app/src" };
+        // Heap de Node escalado a la RAM de la VM: por default Node topa el
+        // old-space en ~2GB y los builds de vite/RRv7 hacen OOM aunque la VM
+        // tenga más RAM. ~75% de la RAM de la clase.
+        let node_heap = match size {
+            "xl" => 6144,
+            "l" => 3072,
+            "m" => 1536,
+            _ => 0,
+        };
+        let node_env = if node_heap > 0 {
+            format!("export NODE_OPTIONS=--max-old-space-size={node_heap}; ")
+        } else {
+            String::new()
+        };
         let cmd = format!(
-            "set -e; rm -rf /app; git clone --depth 1 {ref_repo} /app; cd /app; {install}; {build_step}(APP_NAME='{app_name}' APP_ACCENT='{accent}' APP_LOGO='{logo_url}' PORT={APP_PORT} nohup {start} > /tmp/app.log 2>&1 &); sleep 3; echo started"
+            "set -e; {node_env}rm -rf {workdir}; mkdir -p {workdir}; git clone --depth 1 {ref_repo} {workdir}; cd {workdir}; {install}; {build_step}{prune}(APP_NAME='{app_name}' APP_ACCENT='{accent}' APP_LOGO='{logo_url}' PORT={APP_PORT} setsid nohup {start} > /tmp/app.log 2>&1 &); sleep 2; echo GHOSTY_DEPLOY_DONE"
         );
-        // Build de apps reales (RRv7, etc.) puede tardar varios minutos; 10 min de margen.
-        match client.exec(&id, &cmd, 600).await {
-            Ok(r) if r.exit_code == 0 => {
-                let _ = tx.send(Msg::Step {
-                    idx: 1,
-                    status: StepStatus::Done,
-                    detail: "app arrancada".to_string(),
-                });
-            }
-            Ok(r) => {
-                let detail = trim_log(&format!("{}{}", r.stdout, r.stderr));
-                let _ = tx.send(Msg::Step {
-                    idx: 1,
-                    status: StepStatus::Failed,
-                    detail: detail.clone(),
-                });
-                let _ = tx.send(Msg::Failed {
-                    error: format!("deploy exit {}: {detail}", r.exit_code),
-                });
-                return;
-            }
+        // Deploy en background + polling (resiliente: la VM saturada por el build no
+        // tira la conexión, cada poll es una llamada corta y reintentable).
+        let exec_id = match client.exec_background(&id, &cmd).await {
+            Ok(b) => b.exec_id,
             Err(e) => {
                 let _ = tx.send(Msg::Step {
                     idx: 1,
@@ -967,6 +1072,71 @@ pub fn spawn_launch(
                 });
                 return;
             }
+        };
+        const MAX_POLLS: u32 = 240; // 240 × 3s = 12 min
+        const MAX_CONSEC_ERRORS: u32 = 30; // ~90s seguidos sin respuesta → rendirse
+        let mut consec_errors = 0u32;
+        let mut finished = false;
+        for _ in 0..MAX_POLLS {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            match client.exec_status(&id, &exec_id).await {
+                Ok(st) if st.status == "exited" => {
+                    let code = st.exit_code.unwrap_or(-1);
+                    if code == 0 {
+                        let _ = tx.send(Msg::Step {
+                            idx: 1,
+                            status: StepStatus::Done,
+                            detail: "app arrancada".to_string(),
+                        });
+                    } else {
+                        let detail = trim_log(&format!("{}{}", st.stdout, st.stderr));
+                        let _ = tx.send(Msg::Step {
+                            idx: 1,
+                            status: StepStatus::Failed,
+                            detail: detail.clone(),
+                        });
+                        let _ = tx.send(Msg::Failed {
+                            error: format!("deploy exit {code}: {detail}"),
+                        });
+                        return;
+                    }
+                    finished = true;
+                    break;
+                }
+                Ok(_) => {
+                    consec_errors = 0;
+                    let _ = tx.send(Msg::Step {
+                        idx: 1,
+                        status: StepStatus::Running,
+                        detail: "instalando y compilando…".to_string(),
+                    });
+                }
+                Err(_) => {
+                    // 5xx transitorio: el agente in-VM está ocupado con el build. Reintentar.
+                    consec_errors += 1;
+                    if consec_errors >= MAX_CONSEC_ERRORS {
+                        let err = "El deploy dejó de responder (VM saturada demasiado tiempo)"
+                            .to_string();
+                        let _ = tx.send(Msg::Step {
+                            idx: 1,
+                            status: StepStatus::Failed,
+                            detail: err.clone(),
+                        });
+                        let _ = tx.send(Msg::Failed { error: err });
+                        return;
+                    }
+                }
+            }
+        }
+        if !finished {
+            let err = "El deploy no terminó a tiempo (12 min)".to_string();
+            let _ = tx.send(Msg::Step {
+                idx: 1,
+                status: StepStatus::Failed,
+                detail: err.clone(),
+            });
+            let _ = tx.send(Msg::Failed { error: err });
+            return;
         }
 
         // Paso 2 — exponer puerto.

@@ -360,11 +360,18 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 _ => {}
             }
         }
-        Screen::Error => {
-            if code == KeyCode::Esc {
-                app.should_quit = true;
+        Screen::Error => match code {
+            KeyCode::Char('q') => app.should_quit = true,
+            // Cualquier otra tecla: limpiar y volver al panel (recarga la lista);
+            // sin sesión → pantalla de inicio.
+            _ => {
+                if app.dismiss_error() {
+                    if let Some(client) = app.client.clone() {
+                        spawn_list_apps(client, app.email.clone(), tx.clone());
+                    }
+                }
             }
-        }
+        },
     }
 }
 

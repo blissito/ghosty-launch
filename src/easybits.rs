@@ -36,10 +36,20 @@ struct SandboxList {
     sandboxes: Option<Vec<Sandbox>>,
 }
 
+/// Respuesta de POST /sandboxes/:id/bg — arranca un comando en background.
 #[derive(Debug, Deserialize)]
-pub struct ExecResult {
+pub struct BgStart {
+    #[serde(rename = "execId", alias = "exec_id")]
+    pub exec_id: String,
+}
+
+/// Respuesta de GET /sandboxes/:id/bg/:execId — estado + logs capturados.
+#[derive(Debug, Deserialize)]
+pub struct BgStatus {
+    /// "running" | "exited"
+    pub status: String,
     #[serde(rename = "exitCode", alias = "exit_code", default)]
-    pub exit_code: i32,
+    pub exit_code: Option<i32>,
     #[serde(default)]
     pub stdout: String,
     #[serde(default)]
@@ -87,11 +97,13 @@ impl Client {
 
     /// POST /api/v2/sandboxes — crea una VM (persistente para hostear).
     /// `name` la marca para poder reencontrarla en runs posteriores.
+    /// `size` = clase de tamaño (s/m/l/xl); EasyBits la mapea a CPU/RAM/disco.
     pub async fn create_sandbox(
         &self,
         template: &str,
         persistent: bool,
         name: &str,
+        size: &str,
     ) -> Result<Sandbox> {
         let resp = self
             .http
@@ -101,10 +113,11 @@ impl Client {
                 "template": template,
                 "persistent": persistent,
                 "name": name,
+                "size": size,
             }))
             .send()
             .await?;
-        ensure_ok(&resp.status(), "POST /sandboxes")?;
+        let resp = ensure_ok_body(resp, "POST /sandboxes").await?;
         Ok(resp.json::<Sandbox>().await?)
     }
 
@@ -136,23 +149,32 @@ impl Client {
         Ok(resp.json::<Sandbox>().await?)
     }
 
-    /// POST /api/v2/sandboxes/:id/exec — corre un comando dentro de la VM.
-    /// El exec es síncrono (la petición HTTP queda abierta hasta que termina), así
-    /// que el timeout HTTP debe superar al del comando (build largo de RRv7, etc.).
-    pub async fn exec(&self, id: &str, command: &str, timeout_seconds: u32) -> Result<ExecResult> {
+    /// POST /api/v2/sandboxes/:id/bg — arranca un comando en background y vuelve
+    /// al instante con un execId. Para deploys largos (install+build): la petición
+    /// no queda abierta, así que un build que satura la micro-VM no tira la conexión
+    /// (patrón resiliente tipo E2B `background:true` + poll).
+    pub async fn exec_background(&self, id: &str, command: &str) -> Result<BgStart> {
         let resp = self
             .http
-            .post(self.url(&format!("/sandboxes/{id}/exec")))
+            .post(self.url(&format!("/sandboxes/{id}/bg")))
             .bearer_auth(&self.api_key)
-            .timeout(Duration::from_secs(timeout_seconds as u64 + 30))
-            .json(&serde_json::json!({
-                "command": command,
-                "timeoutSeconds": timeout_seconds,
-            }))
+            .json(&serde_json::json!({ "command": command }))
             .send()
             .await?;
-        ensure_ok(&resp.status(), "POST /sandboxes/:id/exec")?;
-        Ok(resp.json::<ExecResult>().await?)
+        let resp = ensure_ok_body(resp, "POST /sandboxes/:id/bg").await?;
+        Ok(resp.json::<BgStart>().await?)
+    }
+
+    /// GET /api/v2/sandboxes/:id/bg/:execId — estado + logs del proceso background.
+    pub async fn exec_status(&self, id: &str, exec_id: &str) -> Result<BgStatus> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/sandboxes/{id}/bg/{exec_id}")))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+        let resp = ensure_ok_body(resp, "GET /sandboxes/:id/bg/:execId").await?;
+        Ok(resp.json::<BgStatus>().await?)
     }
 
     /// POST /api/v2/sandboxes/:id/expose — publica un puerto y devuelve la URL.
@@ -328,5 +350,21 @@ fn ensure_ok(status: &reqwest::StatusCode, what: &str) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!("{what} falló: HTTP {}", status.as_u16()))
+    }
+}
+
+/// Como `ensure_ok` pero consume la respuesta y adjunta el cuerpo del error
+/// (recortado) — útil para ver el motivo real de un 500 del host.
+async fn ensure_ok_body(resp: reqwest::Response, what: &str) -> Result<reqwest::Response> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body = resp.text().await.unwrap_or_default();
+    let snippet: String = body.trim().chars().take(400).collect();
+    if snippet.is_empty() {
+        Err(anyhow!("{what} falló: HTTP {}", status.as_u16()))
+    } else {
+        Err(anyhow!("{what} falló: HTTP {} — {snippet}", status.as_u16()))
     }
 }

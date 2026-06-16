@@ -273,7 +273,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("d", "destruir"),
             ("q", "salir"),
         ],
-        Screen::Error => &[("esc", "salir")],
+        Screen::Error => &[("enter", "volver al panel"), ("q", "salir")],
     };
 
     // En live: un hyperlink OSC 8 clickeable ("→ abrir ↗") cuyo destino es la URL

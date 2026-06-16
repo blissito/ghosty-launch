@@ -58,9 +58,26 @@ type = "app"
 install = "npm ci"
 build   = "npm run build"        # se corre solo si existe el script
 start   = "npm start"
+
+# Tamaño de la VM (opcional; si falta se detecta por el peso del repo):
+[resources]
+size = "l"                       # s | m | l | xl
 ```
 
 Ejemplo, sitio estático sin build → **no necesitas archivo** (auto-detect). Si tu HTML necesita servirse con algo raro, declara `[deploy].start`.
+
+### Tamaño de la VM (`[resources] size`)
+
+Apps reales (RRv7, vite, Next) necesitan más RAM y disco que una micro-VM. Ghosty **detecta el peso del repo** y pide la clase adecuada; puedes forzarla con `[resources] size`.
+
+| size | vCPU | RAM | disco | para |
+|---|---|---|---|---|
+| `s` | 1 | 512 MB | — | apps chicas sin build |
+| `m` | 2 | 2 GB | 4 GB | build mediano |
+| `l` | 4 | 4 GB | 12 GB | vite / RRv7 (apps pesadas) |
+| `xl` | 8 | 8 GB | 24 GB | monorepos / Next.js |
+
+`m`/`l`/`xl` requieren plan de pago en EasyBits (las VMs grandes cuestan). El estático (CDN) sigue **sin cargo**.
 
 Apps personalizadas leen `APP_NAME` / `APP_ACCENT` / `APP_LOGO` del entorno (Ghosty los inyecta). Ver `examples/node-hello/`.
 
