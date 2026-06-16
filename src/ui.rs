@@ -270,11 +270,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Screen::Envs => &[("enter", "agregar/publicar"), ("esc", "volver")],
         Screen::Launching => &[("esc", "cancelar")],
         Screen::Live => &[
-            ("enter/o", "abrir"),
             ("e", "envs"),
             ("l", "logs"),
             ("b", "volver"),
             ("d", "destruir"),
+            ("q", "salir"),
         ],
         Screen::Logs => &[("r", "recargar"), ("b/esc", "volver"), ("q", "salir")],
         Screen::Error => &[("l", "logs"), ("enter", "volver al panel"), ("q", "salir")],
