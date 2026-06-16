@@ -339,7 +339,7 @@ fn restart_command(ovr: &recipe::Override) -> String {
     let envs: String = ovr
         .envs
         .iter()
-        .filter(|(k, _)| crate::app::is_env_key(k))
+        .filter(|(k, v)| crate::app::is_env_key(k) && !v.is_empty())
         .map(|(k, v)| format!("{k}={} ", crate::app::sh_squote(v)))
         .collect();
     let start = ovr.start.clone().unwrap_or_else(|| "npm start".into());

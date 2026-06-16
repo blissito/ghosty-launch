@@ -717,12 +717,17 @@ fn envs_screen(app: &App) -> Vec<Line<'static>> {
         )));
     } else {
         for (k, v) in &app.envs {
-            let masked: String = "•".repeat(v.chars().count().clamp(3, 12));
+            // Valor vacío → marcarlo CLARO (no enmascarar a •••, que parecería puesto).
+            let (shown, color) = if v.is_empty() {
+                ("‹falta — tecléalo›".to_string(), ERROR)
+            } else {
+                ("•".repeat(v.chars().count().clamp(3, 12)), DIM)
+            };
             out.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
                 Span::styled(k.clone(), Style::default().fg(ACCENT)),
                 Span::styled(" = ", Style::default().fg(DIM)),
-                Span::styled(masked, Style::default().fg(DIM)),
+                Span::styled(shown, Style::default().fg(color)),
             ]));
         }
     }

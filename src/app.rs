@@ -1388,7 +1388,7 @@ pub fn spawn_launch(
         // quoteado a prueba de shell.
         let user_env: String = envs
             .iter()
-            .filter(|(k, _)| is_env_key(k))
+            .filter(|(k, v)| is_env_key(k) && !v.is_empty())
             .map(|(k, v)| format!("{k}={} ", sh_squote(v)))
             .collect();
         let cmd = format!(
@@ -1616,7 +1616,7 @@ pub fn spawn_reconfigure(
         });
         let user_env: String = envs
             .iter()
-            .filter(|(k, _)| is_env_key(k))
+            .filter(|(k, v)| is_env_key(k) && !v.is_empty())
             .map(|(k, v)| format!("{k}={} ", sh_squote(v)))
             .collect();
         let safe = safe_name(&app_name);
