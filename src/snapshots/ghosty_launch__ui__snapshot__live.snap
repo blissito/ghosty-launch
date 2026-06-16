@@ -1,6 +1,6 @@
 ---
 source: src/ui.rs
-assertion_line: 1015
+assertion_line: 1026
 expression: "render_str(&app, 78, 22)"
 ---
 
@@ -24,4 +24,4 @@ expression: "render_str(&app, 78, 22)"
            │                                                      │
            ╰──────────────────────────────────────────────────────╯
 
-]8;;https://sb-abc123-3000.sandboxes.easybits.cloud\  → abrir tu app ↗]8;;\                     enter/o abrir    l logs    b volver    d destruir    q s
+]8;;https://sb-abc123-3000.sandboxes.easybits.cloud\  → abrir tu app ↗]8;;\                     enter/o abrir    e envs    l logs    b volver    d destr

@@ -257,21 +257,24 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Screen::Apps => &[
             ("enter", "ver"),
             ("c", "crear"),
+            ("e", "envs"),
             ("d", "borrar"),
-            ("x", "cerrar sesión"),
-            ("q", "salir"),
+            ("x", "salir sesión"),
         ],
         Screen::Create => &[("enter", "publicar"), ("esc", "volver")],
         Screen::Consent => &[("y", "publicar"), ("x", "cerrar sesión"), ("q", "salir")],
         Screen::Customize => &[("enter", "siguiente"), ("⇥", "campo"), ("esc", "volver")],
+        Screen::Envs if app.reconfig_id.is_some() => {
+            &[("enter", "agregar/reiniciar"), ("esc", "volver")]
+        }
         Screen::Envs => &[("enter", "agregar/publicar"), ("esc", "volver")],
         Screen::Launching => &[("esc", "cancelar")],
         Screen::Live => &[
             ("enter/o", "abrir"),
+            ("e", "envs"),
             ("l", "logs"),
             ("b", "volver"),
             ("d", "destruir"),
-            ("q", "salir"),
         ],
         Screen::Logs => &[("r", "recargar"), ("b/esc", "volver"), ("q", "salir")],
         Screen::Error => &[("l", "logs"), ("enter", "volver al panel"), ("q", "salir")],
@@ -687,9 +690,15 @@ fn customize(app: &App) -> Vec<Line<'static>> {
 
 fn envs_screen(app: &App) -> Vec<Line<'static>> {
     let blink = (app.tick / 8).is_multiple_of(2);
+    let reconfig = app.reconfig_id.is_some();
+    let heading = if reconfig {
+        format!("Reconfigurar «{}»", app.app_name)
+    } else {
+        "Variables de entorno".to_string()
+    };
     let mut out = vec![
         Line::from(Span::styled(
-            "Variables de entorno",
+            heading,
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -728,10 +737,12 @@ fn envs_screen(app: &App) -> Vec<Line<'static>> {
     ]));
 
     out.push(Line::from(""));
-    out.push(Line::from(Span::styled(
-        "enter agrega · clave sin valor la quita · enter vacío publica",
-        Style::default().fg(DIM),
-    )));
+    let last = if reconfig {
+        "enter agrega · clave sin valor la quita · enter vacío reinicia"
+    } else {
+        "enter agrega · clave sin valor la quita · enter vacío publica"
+    };
+    out.push(Line::from(Span::styled(last, Style::default().fg(DIM))));
     out
 }
 
@@ -989,6 +1000,17 @@ mod snapshot {
             ("DATABASE_URL".into(), "postgres://localhost/app".into()),
             ("API_KEY".into(), "sk-secret-123".into()),
         ];
+        insta::assert_snapshot!(render_str(&app, 78, 20));
+    }
+
+    #[test]
+    fn envs_reconfig() {
+        // Reconfigurar una app existente: encabezado con el nombre y hint "reinicia".
+        let mut app = App::new();
+        app.screen = Screen::Envs;
+        app.reconfig_id = Some("sb_abc".into());
+        app.app_name = "Mi Tienda".into();
+        app.envs = vec![("DATABASE_URL".into(), "postgres://localhost/app".into())];
         insta::assert_snapshot!(render_str(&app, 78, 20));
     }
 

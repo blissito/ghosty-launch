@@ -10,7 +10,7 @@ mod ui;
 use anyhow::Result;
 use app::{
     spawn_create, spawn_destroy_and_reload, spawn_fetch_logs, spawn_finish, spawn_launch,
-    spawn_list_apps, spawn_oauth, spawn_reconnect, App, Screen,
+    spawn_list_apps, spawn_oauth, spawn_reconfigure, spawn_reconnect, App, Screen,
 };
 use crossterm::{
     event::{
@@ -237,11 +237,19 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                     let a = &app.apps[app.apps_cursor];
                     app.url = Some(a.url.clone());
                     app.sandbox_id = Some(a.id.clone());
+                    app.app_name = a.name.clone(); // para reconfigurar / mostrar
                     app.live_at = None; // ver existente → sin confetti
                     app.screen = Screen::Live;
                 }
                 KeyCode::Char('o') if n > 0 && app.apps[app.apps_cursor].running => {
                     let _ = open_browser(&app.apps[app.apps_cursor].url);
+                }
+                // Reconfigurar envs y reiniciar la app seleccionada (en su VM).
+                KeyCode::Char('e') | KeyCode::Char('E') if n > 0 => {
+                    let a = &app.apps[app.apps_cursor];
+                    app.app_name = a.name.clone();
+                    let id = a.id.clone();
+                    app.start_reconfigure_envs(id);
                 }
                 KeyCode::Char('d') if n > 0 => app.confirm_destroy = true,
                 KeyCode::Char('x') | KeyCode::Char('X') => app.logout(),
@@ -330,29 +338,45 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             }
         }
         Screen::Envs => match code {
-            KeyCode::Esc => app.screen = Screen::Customize,
+            // Reconfigurando una app existente → volver a Live; deploy fresco → Customize.
+            KeyCode::Esc => {
+                app.screen = if app.reconfig_id.is_some() {
+                    Screen::Live
+                } else {
+                    Screen::Customize
+                };
+            }
             KeyCode::Backspace => {
                 app.env_input.pop();
             }
             KeyCode::Enter => {
                 // Con texto: agrega/actualiza la variable y limpia el buffer.
-                // Vacío: publica con las envs acumuladas.
+                // Vacío: publica (o reinicia, si venimos de reconfigurar) con las
+                // envs acumuladas.
                 if app.env_input.trim().is_empty() {
                     if let Some(client) = app.client.clone() {
-                        let accent = app::chosen_accent(app);
-                        let logo = app.logo_input.clone();
-                        let repo = app.repo_input.clone();
                         let envs = app.envs.clone();
-                        app.start_launch();
-                        spawn_launch(
-                            client,
-                            tx.clone(),
-                            repo,
-                            app.app_name.clone(),
-                            accent,
-                            logo,
-                            envs,
-                        );
+                        if let Some(id) = app.reconfig_id.clone() {
+                            // Reconfigurar: reiniciar la VM existente con las envs.
+                            let name = app.app_name.clone();
+                            app.start_reconfigure();
+                            spawn_reconfigure(client, tx.clone(), id, name, envs);
+                        } else {
+                            // Deploy fresco.
+                            let accent = app::chosen_accent(app);
+                            let logo = app.logo_input.clone();
+                            let repo = app.repo_input.clone();
+                            app.start_launch();
+                            spawn_launch(
+                                client,
+                                tx.clone(),
+                                repo,
+                                app.app_name.clone(),
+                                accent,
+                                logo,
+                                envs,
+                            );
+                        }
                     }
                 } else {
                     app.upsert_env(&app.env_input.clone());
@@ -396,6 +420,12 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                     }
                 }
                 KeyCode::Char('d') => app.confirm_destroy = true,
+                // Reconfigurar envs y reiniciar (en la misma VM).
+                KeyCode::Char('e') | KeyCode::Char('E') => {
+                    if let Some(id) = app.sandbox_id.clone() {
+                        app.start_reconfigure_envs(id);
+                    }
+                }
                 // Ver logs de la VM (stdout/stderr de la app).
                 KeyCode::Char('l') | KeyCode::Char('L') => {
                     if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {

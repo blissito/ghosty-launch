@@ -100,6 +100,8 @@ Detalles:
 - `APP_NAME` / `APP_ACCENT` / `APP_LOGO` / `PORT` los pone Ghosty y **siempre ganan** sobre lo que definas con esos nombres.
 - El `.env` se lee de tu cwd local, así que mantenlo en tu `.gitignore` — nunca se sube al repo.
 
+**Reconfigurar una app ya publicada:** si una app quedó caída por faltarle variables (o quieres cambiarlas), desde el panel o la vista de la app pulsa **`e`**. Editas las envs y Ghosty **reinicia el proceso en la misma VM** con las nuevas (sin reclonar) y verifica que responda. (Nota: el acento/logo de personalización no se reaplican en un reinicio.)
+
 ## Configuración (opcional)
 
 | Var | Default | Qué hace |

@@ -339,6 +339,9 @@ pub struct App {
     pub running_idx: Option<usize>,
     /// Tick en que empezó el paso en curso (ancla del "creep" de la barra).
     pub step_anchor: u64,
+    /// Si Some(id): la pantalla Envs reconfigura esa VM existente (reinicia con las
+    /// nuevas envs, sin reclonar). None = deploy fresco normal.
+    pub reconfig_id: Option<String>,
     /// URL del repo a publicar (pantalla Create).
     pub repo_input: String,
     pub error: Option<String>,
@@ -379,6 +382,7 @@ impl App {
             logs_return: Screen::Live,
             running_idx: None,
             step_anchor: 0,
+            reconfig_id: None,
             repo_input: String::new(),
             error: None,
             should_quit: false,
@@ -446,10 +450,40 @@ impl App {
         self.screen = Screen::Create;
     }
 
-    /// Pasa a la pantalla de variables de entorno (tras personalizar).
+    /// Pasa a la pantalla de variables de entorno (tras personalizar) en modo
+    /// deploy fresco (no reconfiguración).
     pub fn start_envs(&mut self) {
+        self.reconfig_id = None;
         self.env_input.clear();
         self.screen = Screen::Envs;
+    }
+
+    /// Abre la pantalla de Envs para RECONFIGURAR una app existente: pre-carga el
+    /// `.env` local y marca la VM a reiniciar. Al confirmar se reinicia en sitio.
+    pub fn start_reconfigure_envs(&mut self, id: String) {
+        self.reconfig_id = Some(id);
+        self.envs = load_dotenv();
+        self.env_input.clear();
+        self.error = None;
+        self.screen = Screen::Envs;
+    }
+
+    /// Prepara los pasos para reiniciar una app en su VM (sin reclonar).
+    pub fn start_reconfigure(&mut self) {
+        self.logs = None;
+        self.running_idx = None;
+        self.step_anchor = self.tick;
+        self.url = None;
+        self.live_at = None;
+        self.confirm_destroy = false;
+        // No conocemos el repo de una app existente → que Live no muestre uno viejo.
+        self.repo_input.clear();
+        self.steps = vec![
+            Step::new("Deteniendo la app"),
+            Step::new("Reiniciando con tus variables"),
+            Step::new("Verificando que responda"),
+        ];
+        self.screen = Screen::Launching;
     }
 
     /// Aplica `CLAVE=valor` a la lista: agrega/actualiza; con valor vacío elimina
@@ -1482,6 +1516,118 @@ pub fn spawn_fetch_logs(client: Client, id: String, tx: UnboundedSender<Msg>) {
     tokio::spawn(async move {
         let logs = fetch_app_log(&client, &id).await;
         let _ = tx.send(Msg::Logs { text: logs });
+    });
+}
+
+/// Reinicia una app EN SU VM con nuevas envs, sin reclonar (el código ya está en
+/// /app o /app/src). Detiene el proceso viejo (el que tiene PORT en su environ),
+/// re-arranca con las envs nuevas y verifica que responda. Reusa la URL ya expuesta.
+pub fn spawn_reconfigure(
+    client: Client,
+    tx: UnboundedSender<Msg>,
+    id: String,
+    app_name: String,
+    envs: Vec<(String, String)>,
+) {
+    tokio::spawn(async move {
+        // Paso 0 — detener el proceso viejo + re-arrancar con las nuevas envs.
+        let _ = tx.send(Msg::Step {
+            idx: 0,
+            status: StepStatus::Running,
+            detail: String::new(),
+        });
+        let user_env: String = envs
+            .iter()
+            .filter(|(k, _)| is_env_key(k))
+            .map(|(k, v)| format!("{k}={} ", sh_squote(v)))
+            .collect();
+        let safe = safe_name(&app_name);
+        // Mata SOLO los procesos cuyo environ tenga PORT=<APP_PORT> (= nuestra app),
+        // nunca el agente in-VM. Pura shell + /proc, sin depender de ss/lsof.
+        let killer = format!(
+            "for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do if grep -qa 'PORT={APP_PORT}' /proc/$pid/environ 2>/dev/null; then [ \"$pid\" != \"$$\" ] && kill $pid 2>/dev/null; fi; done"
+        );
+        // Detecta el workdir (donde quedó el package.json) y el start (ghosty.toml o
+        // npm start). Sin set -e: los errores se ven en el health check.
+        let cmd = format!(
+            "for d in /app/src /app; do [ -f \"$d/package.json\" ] && WD=\"$d\" && break; done; [ -z \"$WD\" ] && {{ echo NO_APP; exit 1; }}; cd \"$WD\"; START=$(sed -n 's/^[[:space:]]*start[[:space:]]*=[[:space:]]*\"\\(.*\\)\".*/\\1/p' \"$WD/ghosty.toml\" 2>/dev/null | head -1); [ -z \"$START\" ] && START=\"npm start\"; {killer}; sleep 1; rm -f /tmp/app.log; ({user_env}APP_NAME='{safe}' PORT={APP_PORT} setsid nohup $START > /tmp/app.log 2>&1 &); sleep 2; echo GHOSTY_RECONFIG_DONE"
+        );
+        match exec_oneshot(&client, &id, &cmd, 60).await {
+            Some(st) if st.exit_code == Some(0) => {
+                let _ = tx.send(Msg::Step {
+                    idx: 0,
+                    status: StepStatus::Done,
+                    detail: String::new(),
+                });
+            }
+            Some(st) => {
+                let detail = if st.stdout.contains("NO_APP") {
+                    "no encontré el código de la app en la VM (¿se borró /app?)".to_string()
+                } else {
+                    trim_log(&format!("{}{}", st.stdout, st.stderr))
+                };
+                let _ = tx.send(Msg::Step {
+                    idx: 0,
+                    status: StepStatus::Failed,
+                    detail: detail.clone(),
+                });
+                let _ = tx.send(Msg::Failed {
+                    error: format!("No se pudo reiniciar: {detail}"),
+                });
+                return;
+            }
+            None => {
+                let err = "El reinicio no respondió (VM ocupada o caída)".to_string();
+                let _ = tx.send(Msg::Step {
+                    idx: 0,
+                    status: StepStatus::Failed,
+                    detail: err.clone(),
+                });
+                let _ = tx.send(Msg::Failed { error: err });
+                return;
+            }
+        }
+
+        // Paso 1 — confirmar que arrancó (es el mismo exec; lo marcamos hecho).
+        let _ = tx.send(Msg::Step {
+            idx: 1,
+            status: StepStatus::Done,
+            detail: "proceso re-lanzado".to_string(),
+        });
+
+        // Paso 2 — health check (igual que el deploy).
+        let _ = tx.send(Msg::Step {
+            idx: 2,
+            status: StepStatus::Running,
+            detail: format!("probando http://127.0.0.1:{APP_PORT}…"),
+        });
+        if !health_check(&client, &id).await {
+            let logs = fetch_app_log(&client, &id).await;
+            let tail = trim_log(&logs);
+            let _ = tx.send(Msg::Step {
+                idx: 2,
+                status: StepStatus::Failed,
+                detail: "la app no respondió tras reiniciar".to_string(),
+            });
+            let _ = tx.send(Msg::Logs { text: logs });
+            let _ = tx.send(Msg::Failed {
+                error: if tail.is_empty() {
+                    "la app no respondió tras reiniciar (sin logs)".to_string()
+                } else {
+                    format!("sigue sin responder. Últimas líneas del log:\n{tail}")
+                },
+            });
+            return;
+        }
+        let _ = tx.send(Msg::Step {
+            idx: 2,
+            status: StepStatus::Done,
+            detail: "responde 🟢".to_string(),
+        });
+        // La VM ya tenía el puerto expuesto → reusamos la misma URL pública.
+        let _ = tx.send(Msg::Live {
+            url: public_url(&id, APP_PORT),
+        });
     });
 }
 

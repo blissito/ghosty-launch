@@ -1,0 +1,25 @@
+---
+source: src/ui.rs
+assertion_line: 1014
+expression: "render_str(&app, 78, 20)"
+---
+
+
+     ╭ variables ───────────────────────────────────────────────────────╮
+     │                                                                  │
+     │                              ▄████▄                              │
+     │                             ▐ ●  ● ▌                             │
+     │                             ▐█▀██▀█▌                             │
+     │               Ghosty Launch  ·  que lo haga Ghosty               │
+     │                                                                  │
+     │  Reconfigurar «Mi Tienda»                                        │
+     │                                                                  │
+     │    DATABASE_URL = ••••••••••••                                   │
+     │                                                                  │
+     │  › CLAVE=valor▏                                                  │
+     │                                                                  │
+     │  enter agrega · clave sin valor la quita · enter vacío reinicia  │
+     │                                                                  │
+     ╰──────────────────────────────────────────────────────────────────╯
+
+   enter agregar/reiniciar    esc volver
