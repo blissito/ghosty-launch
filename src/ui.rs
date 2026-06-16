@@ -872,7 +872,7 @@ fn error(app: &App) -> Vec<Line<'static>> {
 fn agent_screen(app: &App) -> Vec<Line<'static>> {
     let mut out = vec![
         Line::from(Span::styled(
-            "El agente en el ruedo  ·  diagnostica y arregla",
+            "Ghosty espanta el fallo  ·  diagnostica y arregla",
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
