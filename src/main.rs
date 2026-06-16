@@ -9,8 +9,8 @@ mod ui;
 
 use anyhow::Result;
 use app::{
-    spawn_create, spawn_destroy_and_reload, spawn_finish, spawn_launch, spawn_list_apps,
-    spawn_oauth, spawn_reconnect, App, Screen,
+    spawn_create, spawn_destroy_and_reload, spawn_fetch_logs, spawn_finish, spawn_launch,
+    spawn_list_apps, spawn_oauth, spawn_reconnect, App, Screen,
 };
 use crossterm::{
     event::{
@@ -396,11 +396,45 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                     }
                 }
                 KeyCode::Char('d') => app.confirm_destroy = true,
+                // Ver logs de la VM (stdout/stderr de la app).
+                KeyCode::Char('l') | KeyCode::Char('L') => {
+                    if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
+                        app.logs = None;
+                        app.busy = Some("trayendo logs…".into());
+                        app.logs_return = Screen::Live;
+                        app.screen = Screen::Logs;
+                        spawn_fetch_logs(client, id, tx.clone());
+                    }
+                }
                 _ => {}
             }
         }
+        Screen::Logs => match code {
+            KeyCode::Char('q') => app.should_quit = true,
+            // Recargar.
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
+                    app.logs = None;
+                    app.busy = Some("trayendo logs…".into());
+                    spawn_fetch_logs(client, id, tx.clone());
+                }
+            }
+            _ => app.screen = app.logs_return,
+        },
         Screen::Error => match code {
             KeyCode::Char('q') => app.should_quit = true,
+            // Ver logs de la VM. Si el fallo fue del health-check ya vienen cargados;
+            // si no, los traemos. Solo si hay una VM viva a la cual pedírselos.
+            KeyCode::Char('l') | KeyCode::Char('L') if app.sandbox_id.is_some() => {
+                app.logs_return = Screen::Error;
+                app.screen = Screen::Logs;
+                if app.logs.is_none() {
+                    if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
+                        app.busy = Some("trayendo logs…".into());
+                        spawn_fetch_logs(client, id, tx.clone());
+                    }
+                }
+            }
             // Cualquier otra tecla: limpiar y volver al panel (recarga la lista);
             // sin sesión → pantalla de inicio.
             _ => {

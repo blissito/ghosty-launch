@@ -76,6 +76,29 @@ fn next_eyes(tick: u64) -> ((&'static str, &'static str), u64) {
     }
 }
 
+/// Ojos para el estado "trabajando" (pantalla Launching). Ghosty se concentra con
+/// los ojos cerrados (ambos) y de rato en rato entra en trance: los ojos giran como
+/// hipnotizados antes de volver a cerrarse. Determinista del tick (no usa el idle).
+pub fn working_eyes(tick: u64) -> (&'static str, &'static str) {
+    // Vórtice hipnótico: anillos que laten hacia dentro/fuera (◌ ◍ ◎ ◉ ◎ ◍).
+    // Paso cada 2 ticks (~100ms). Los dos ojos van medio ciclo desfasados → uno se
+    // abre mientras el otro se cierra: mirada en trance, un poco loca.
+    const VORTEX: [&str; 6] = ["◌", "◍", "◎", "◉", "◎", "◍"];
+    let cycle = tick % 80;
+    match cycle {
+        // Concentrado: ojos cerrados un buen rato.
+        0..=43 => ("─", "─"),
+        // Transición: medio cerrados, "despertando" al trance.
+        44..=47 => ("◡", "◡"),
+        // Trance: el vórtice late, ojos desfasados.
+        _ => {
+            let l = VORTEX[(tick / 2 % 6) as usize];
+            let r = VORTEX[((tick / 2 + 3) % 6) as usize];
+            (l, r)
+        }
+    }
+}
+
 /// Borra la última palabra de un buffer (Ctrl+W). En URLs sin espacios = limpia todo.
 pub fn delete_last_word(s: &mut String) {
     while s.ends_with(' ') {
@@ -114,6 +137,7 @@ pub enum Screen {
     Envs, // variables de entorno a inyectar (auto-cargadas de .env)
     Launching,
     Live,
+    Logs, // visor de /tmp/app.log de la VM
     Error,
 }
 
@@ -255,6 +279,15 @@ pub enum Msg {
     Failed {
         error: String,
     },
+    /// Logs de la VM traídos (a la vista de Logs o tras un fallo).
+    Logs {
+        text: String,
+    },
+    /// No se pudo leer la lista de apps (red/API). NO vacía el panel: distinto de
+    /// "no hay apps". Evita que un fallo transitorio parezca "se borraron todas".
+    AppsError {
+        error: String,
+    },
 }
 
 pub struct App {
@@ -298,6 +331,10 @@ pub struct App {
     pub envs: Vec<(String, String)>,
     /// Buffer de la pantalla Envs: se teclea `CLAVE=valor` y Enter lo agrega.
     pub env_input: String,
+    /// Logs de la app traídos de la VM (`/tmp/app.log`). None = no cargados aún.
+    pub logs: Option<String>,
+    /// Pantalla a la que volver desde la vista de Logs.
+    pub logs_return: Screen,
     /// URL del repo a publicar (pantalla Create).
     pub repo_input: String,
     pub error: Option<String>,
@@ -334,6 +371,8 @@ impl App {
             logo_input: String::new(),
             envs: Vec::new(),
             env_input: String::new(),
+            logs: None,
+            logs_return: Screen::Live,
             repo_input: String::new(),
             error: None,
             should_quit: false,
@@ -520,6 +559,16 @@ impl App {
                 self.error = Some(error);
                 self.screen = Screen::Error;
             }
+            Msg::Logs { text } => {
+                self.busy = None;
+                self.logs = Some(text);
+            }
+            Msg::AppsError { error } => {
+                self.busy = None;
+                // No tocamos self.apps: el panel se queda como estaba.
+                self.error = Some(format!("No se pudo leer tus apps: {error}"));
+                self.screen = Screen::Error;
+            }
         }
     }
 
@@ -530,9 +579,11 @@ impl App {
         self.live_at = None;
         self.sandbox_id = None;
         self.confirm_destroy = false;
+        self.logs = None;
         self.steps = vec![
             Step::new("Creando VM persistente"),
             Step::new("Clonando + instalando + arrancando"),
+            Step::new("Verificando que responda"),
             Step::new("Publicando puerto"),
         ];
         self.screen = Screen::Launching;
@@ -605,12 +656,18 @@ async fn finish_with_token(token: String, tx: UnboundedSender<Msg>) {
     let _ = tx.send(Msg::AuthStatus {
         text: "cargando tus apps…".into(),
     });
-    let apps = list_apps(&client).await;
-    let _ = tx.send(Msg::AppsLoaded {
-        client,
-        email: me.email,
-        apps,
-    });
+    match list_apps(&client).await {
+        Ok(apps) => {
+            let _ = tx.send(Msg::AppsLoaded {
+                client,
+                email: me.email,
+                apps,
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::AppsError { error: e });
+        }
+    }
 }
 
 /// URL pública de una VM expuesta, reconstruida del id+puerto (sin red).
@@ -625,11 +682,11 @@ pub fn public_url(id: &str, port: u16) -> String {
 
 /// Lista las apps que publicó Ghosty Launch (VMs `gl:*` running) con su URL.
 /// Reconstruye la URL (no llama expose por app) → reconexión con UNA sola request.
-pub async fn list_apps(client: &Client) -> Vec<AppEntry> {
-    let list = match client.list_sandboxes().await {
-        Ok(l) => l,
-        Err(_) => return Vec::new(),
-    };
+/// Lista las apps publicadas. `Err` = no se pudo leer (problema de red/API), que
+/// es DISTINTO de "no hay apps" (`Ok(vec![])`). El caller no debe vaciar el panel
+/// ante un `Err` — si no, un fallo transitorio parece "se borraron todas".
+pub async fn list_apps(client: &Client) -> Result<Vec<AppEntry>, String> {
+    let list = client.list_sandboxes().await.map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for s in list {
         let is_ours = s
@@ -637,7 +694,9 @@ pub async fn list_apps(client: &Client) -> Vec<AppEntry> {
             .as_deref()
             .map(|n| n.starts_with(APP_PREFIX))
             .unwrap_or(false);
-        if is_ours {
+        // Salta entradas sin id: no son borrables de forma segura (un id vacío
+        // haría `DELETE /sandboxes/` = borrar todo).
+        if is_ours && !s.sandbox_id.trim().is_empty() {
             let running = s.status == "running";
             out.push(AppEntry {
                 name: display_name(&s.name),
@@ -651,18 +710,24 @@ pub async fn list_apps(client: &Client) -> Vec<AppEntry> {
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Recarga el panel de apps (tras crear/destruir o volver del Live).
 pub fn spawn_list_apps(client: Client, email: Option<String>, tx: UnboundedSender<Msg>) {
     tokio::spawn(async move {
-        let apps = list_apps(&client).await;
-        let _ = tx.send(Msg::AppsLoaded {
-            client,
-            email,
-            apps,
-        });
+        match list_apps(&client).await {
+            Ok(apps) => {
+                let _ = tx.send(Msg::AppsLoaded {
+                    client,
+                    email,
+                    apps,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(Msg::AppsError { error: e });
+            }
+        }
     });
 }
 
@@ -674,13 +739,26 @@ pub fn spawn_destroy_and_reload(
     tx: UnboundedSender<Msg>,
 ) {
     tokio::spawn(async move {
-        let _ = client.destroy(&id).await;
-        let apps = list_apps(&client).await;
-        let _ = tx.send(Msg::AppsLoaded {
-            client,
-            email,
-            apps,
-        });
+        // Si el destroy falla, repórtalo (no sigas como si nada).
+        if let Err(e) = client.destroy(&id).await {
+            let _ = tx.send(Msg::Failed {
+                error: format!("No se pudo borrar la app: {e}"),
+            });
+            return;
+        }
+        match list_apps(&client).await {
+            Ok(apps) => {
+                let _ = tx.send(Msg::AppsLoaded {
+                    client,
+                    email,
+                    apps,
+                });
+            }
+            // El borrado SÍ funcionó pero la recarga falló: no vacíes el panel.
+            Err(e) => {
+                let _ = tx.send(Msg::AppsError { error: e });
+            }
+        }
     });
 }
 
@@ -1244,16 +1322,51 @@ pub fn spawn_launch(
             return;
         }
 
-        // Paso 2 — exponer puerto.
+        // Paso 2 — health check: ¿la app realmente responde? El proceso se lanzó en
+        // background; pudo crashear al arrancar (env faltante, error de runtime) y la
+        // URL quedaría muerta. Probamos http://127.0.0.1:PORT DESDE la VM, con
+        // reintentos mientras bootea. Si no responde, traemos /tmp/app.log.
         let _ = tx.send(Msg::Step {
             idx: 2,
+            status: StepStatus::Running,
+            detail: format!("probando http://127.0.0.1:{APP_PORT}…"),
+        });
+        let healthy = health_check(&client, &id).await;
+        if !healthy {
+            let logs = fetch_app_log(&client, &id).await;
+            let tail = trim_log(&logs);
+            let _ = tx.send(Msg::Step {
+                idx: 2,
+                status: StepStatus::Failed,
+                detail: "la app no respondió en el puerto".to_string(),
+            });
+            // Guarda el log completo (para el visor) y falla con el final del log.
+            let _ = tx.send(Msg::Logs { text: logs });
+            let _ = tx.send(Msg::Failed {
+                error: if tail.is_empty() {
+                    "la app no respondió en el puerto (sin logs)".to_string()
+                } else {
+                    format!("la app no respondió. Últimas líneas del log:\n{tail}")
+                },
+            });
+            return;
+        }
+        let _ = tx.send(Msg::Step {
+            idx: 2,
+            status: StepStatus::Done,
+            detail: "responde 🟢".to_string(),
+        });
+
+        // Paso 3 — exponer puerto.
+        let _ = tx.send(Msg::Step {
+            idx: 3,
             status: StepStatus::Running,
             detail: String::new(),
         });
         match client.expose(&id, APP_PORT).await {
             Ok(exp) => {
                 let _ = tx.send(Msg::Step {
-                    idx: 2,
+                    idx: 3,
                     status: StepStatus::Done,
                     detail: exp.url.clone(),
                 });
@@ -1261,7 +1374,7 @@ pub fn spawn_launch(
             }
             Err(e) => {
                 let _ = tx.send(Msg::Step {
-                    idx: 2,
+                    idx: 3,
                     status: StepStatus::Failed,
                     detail: e.to_string(),
                 });
@@ -1270,6 +1383,63 @@ pub fn spawn_launch(
                 });
             }
         }
+    });
+}
+
+/// Corre un comando one-shot en la VM y devuelve su BgStatus final (o None si no
+/// terminó / falló la conexión). Polla cada 2s hasta `max_polls`.
+async fn exec_oneshot(
+    client: &Client,
+    id: &str,
+    cmd: &str,
+    max_polls: u32,
+) -> Option<crate::easybits::BgStatus> {
+    let exec_id = client.exec_background(id, cmd).await.ok()?.exec_id;
+    for _ in 0..max_polls {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Ok(st) = client.exec_status(id, &exec_id).await {
+            if st.status == "exited" {
+                return Some(st);
+            }
+        }
+    }
+    None
+}
+
+/// ¿La app responde en 127.0.0.1:PORT dentro de la VM? Reintenta ~40s mientras
+/// bootea. Usa Node (garantizado en el template) — sin depender de curl. <500 = sano.
+async fn health_check(client: &Client, id: &str) -> bool {
+    let probe = format!(
+        "require('http').get({{host:'127.0.0.1',port:{APP_PORT},timeout:2000}},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1)).on('timeout',function(){{this.destroy();process.exit(1)}})"
+    );
+    // Bucle POSIX (sin `seq`): 20 intentos × ~2s.
+    let cmd = format!(
+        "i=0; while [ $i -lt 20 ]; do node -e \"{probe}\" && exit 0; i=$((i+1)); sleep 2; done; exit 1"
+    );
+    // El bucle puede tardar ~40s → damos margen de polling (30 × 2s = 60s).
+    matches!(exec_oneshot(client, id, &cmd, 30).await, Some(st) if st.exit_code == Some(0))
+}
+
+/// Trae las últimas líneas de `/tmp/app.log` de la VM (stdout/stderr de la app).
+async fn fetch_app_log(client: &Client, id: &str) -> String {
+    match exec_oneshot(client, id, "tail -n 200 /tmp/app.log 2>/dev/null", 15).await {
+        Some(st) => {
+            let out = format!("{}{}", st.stdout, st.stderr);
+            if out.trim().is_empty() {
+                "(log vacío — la app no escribió nada en /tmp/app.log)".to_string()
+            } else {
+                out
+            }
+        }
+        None => "(no se pudieron leer los logs de la VM)".to_string(),
+    }
+}
+
+/// Trae los logs de la VM a la vista de Logs (botón `l`).
+pub fn spawn_fetch_logs(client: Client, id: String, tx: UnboundedSender<Msg>) {
+    tokio::spawn(async move {
+        let logs = fetch_app_log(&client, &id).await;
+        let _ = tx.send(Msg::Logs { text: logs });
     });
 }
 

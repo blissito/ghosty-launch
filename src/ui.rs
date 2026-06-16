@@ -35,6 +35,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Screen::Envs => ("variables", envs_screen(app)),
         Screen::Launching => ("publicando", launch(app)),
         Screen::Live => ("en vivo", launch(app)),
+        Screen::Logs => ("logs", logs_screen(app)),
         Screen::Error => ("error", error(app)),
     };
 
@@ -164,6 +165,8 @@ fn hero(app: &App) -> Vec<Line<'static>> {
     let (le, re) = match app.screen {
         Screen::Live => ("◕", "◕"), // feliz al quedar en vivo
         Screen::Error => ("×", "×"),
+        // Trabajando: cerrados (concentrado) con transiciones a ojos en trance.
+        Screen::Launching => crate::app::working_eyes(app.tick),
         _ => app.eyes,
     };
     let mascot = [
@@ -271,11 +274,13 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Screen::Launching => &[("esc", "cancelar")],
         Screen::Live => &[
             ("enter/o", "abrir"),
+            ("l", "logs"),
             ("b", "volver"),
             ("d", "destruir"),
             ("q", "salir"),
         ],
-        Screen::Error => &[("enter", "volver al panel"), ("q", "salir")],
+        Screen::Logs => &[("r", "recargar"), ("b/esc", "volver"), ("q", "salir")],
+        Screen::Error => &[("l", "logs"), ("enter", "volver al panel"), ("q", "salir")],
     };
 
     // En live: un hyperlink OSC 8 clickeable ("→ abrir ↗") cuyo destino es la URL
@@ -794,18 +799,24 @@ fn launch(app: &App) -> Vec<Line<'static>> {
                 .chars()
                 .take(8)
                 .collect();
-            let repo = App::ref_repo();
-            let repo_short = repo
-                .trim_start_matches("https://")
-                .trim_start_matches("github.com/")
-                .trim_end_matches(".git");
             out.push(Line::from(""));
+            // El repo solo lo conocemos en un deploy fresco (live_at=Some): viene del
+            // que el user desplegó (repo_input), no del default. Al ver una app
+            // existente del panel no tenemos esa info → omitimos la línea.
+            if app.live_at.is_some() && !app.repo_input.trim().is_empty() {
+                let repo_short = app
+                    .repo_input
+                    .trim()
+                    .trim_start_matches("https://")
+                    .trim_start_matches("github.com/")
+                    .trim_end_matches(".git");
+                out.push(Line::from(Span::styled(
+                    format!("repo: {repo_short}"),
+                    Style::default().fg(DIM),
+                )));
+            }
             out.push(Line::from(Span::styled(
-                format!("repo: {repo_short}"),
-                Style::default().fg(DIM),
-            )));
-            out.push(Line::from(Span::styled(
-                format!("clonado en /app dentro de tu VM ({short}…)"),
+                format!("VM {short}…"),
                 Style::default().fg(DIM),
             )));
         }
@@ -835,6 +846,39 @@ fn error(app: &App) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(err, Style::default().fg(TEXT))),
     ]
+}
+
+fn logs_screen(app: &App) -> Vec<Line<'static>> {
+    let mut out = vec![Line::from(Span::styled(
+        "Logs de la app  ·  /tmp/app.log",
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+    ))];
+    out.push(Line::from(""));
+    match &app.logs {
+        None => {
+            let frame = SPINNER[(app.tick % 10) as usize];
+            out.push(Line::from(vec![
+                Span::styled(format!("{frame} "), Style::default().fg(ACCENT)),
+                Span::styled("trayendo logs de la VM…", Style::default().fg(DIM)),
+            ]));
+        }
+        Some(text) => {
+            // Últimas líneas que caben cómodas; cada una recortada para no desbordar.
+            let lines: Vec<&str> = text.lines().collect();
+            let tail = lines.iter().rev().take(16).rev();
+            for ln in tail {
+                let shown = truncate(ln, 72);
+                out.push(Line::from(Span::styled(shown, Style::default().fg(DIM))));
+            }
+            if text.trim().is_empty() {
+                out.push(Line::from(Span::styled(
+                    "(sin salida)",
+                    Style::default().fg(DIM),
+                )));
+            }
+        }
+    }
+    out
 }
 
 /// Rect centrado vertical + horizontalmente.

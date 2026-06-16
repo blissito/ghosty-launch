@@ -334,6 +334,14 @@ impl Client {
 
     /// DELETE /api/v2/sandboxes/:id — destruye la VM (cleanup).
     pub async fn destroy(&self, id: &str) -> Result<()> {
+        // Guarda crítica: un id vacío convertiría la ruta en `DELETE /sandboxes/`
+        // (sin id) que en algunos backends borra TODO. Nunca mandes eso.
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(anyhow!(
+                "destroy: sandbox id vacío (abortado por seguridad)"
+            ));
+        }
         let resp = self
             .http
             .delete(self.url(&format!("/sandboxes/{id}")))

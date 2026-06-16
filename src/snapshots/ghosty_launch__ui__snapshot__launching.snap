@@ -1,5 +1,6 @@
 ---
 source: src/ui.rs
+assertion_line: 1001
 expression: "render_str(&app, 78, 20)"
 ---
 
@@ -9,16 +10,16 @@ expression: "render_str(&app, 78, 20)"
            │                                                      │
            │                                ·                     │
            │                ·       ▄████▄       ·                │
-           │                       ▐ ●  ● ▌     ✧                 │
+           │                       ▐ ─  ─ ▌     ✧                 │
            │                       ▐█▀██▀█▌                       │
            │         Ghosty Launch  ·  que lo haga Ghosty         │
            │  ● Creando VM persistente                            │
            │  ⠋ Clonando + instalando + arrancando                │
+           │  ○ Verificando que responda                          │
            │  ○ Publicando puerto                                 │
-           │  33% ──────────────────────────────────────────────  │
+           │  25% ──────────────────────────────────────────────  │
            │                                                      │
            ╰──────────────────────────────────────────────────────╯
-
 
 
    esc cancelar
