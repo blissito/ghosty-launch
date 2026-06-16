@@ -84,18 +84,12 @@ fn draw_card(frame: &mut Frame, area: Rect, app: &App, title: &str, content: Vec
     );
     frame.render_widget(Paragraph::new(content).wrap(Wrap { trim: false }), split[1]);
 
-    // Barra de progreso al fondo de la tarjeta en la pantalla de publicación.
-    if app.screen == Screen::Launching {
-        let done = app
-            .steps
-            .iter()
-            .filter(|s| s.status == StepStatus::Done)
-            .count();
-        let ratio = if app.steps.is_empty() {
-            0.0
-        } else {
-            done as f64 / app.steps.len() as f64
-        };
+    // Barra de progreso al fondo de la tarjeta: mientras publica (animada) y al
+    // quedar en vivo en un deploy fresco (se completa al 100% como cierre).
+    let show_gauge = app.screen == Screen::Launching
+        || (app.screen == Screen::Live && app.live_at.is_some() && !app.steps.is_empty());
+    if show_gauge {
+        let ratio = app.launch_ratio();
         let gauge_area = Rect {
             x: inner.x,
             y: inner.y + inner.height.saturating_sub(1),
@@ -827,6 +821,12 @@ fn launch(app: &App) -> Vec<Line<'static>> {
                 Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
             )));
         }
+        // Deploy fresco: una fila espaciadora al fondo para que la barra de progreso
+        // (que se dibuja al 100% como cierre) tenga su propio renglón y no encime el
+        // último texto.
+        if app.live_at.is_some() {
+            out.push(Line::from(""));
+        }
     } else {
         out.push(Line::from(""));
     }
@@ -1013,5 +1013,23 @@ mod snapshot {
         app.screen = Screen::Live;
         // live_at = None → URL totalmente revelada (snapshot determinista).
         insta::assert_snapshot!(render_str(&app, 78, 22));
+    }
+
+    #[test]
+    fn live_fresh() {
+        // Deploy fresco (live_at=Some): la barra de progreso se dibuja al 100% como
+        // cierre. tick alto para que el confetti ya haya pasado (snapshot estable).
+        let mut app = App::new();
+        app.tick = 100;
+        app.start_launch();
+        for s in app.steps.iter_mut() {
+            s.status = StepStatus::Done;
+        }
+        app.url = Some("https://sb-abc123-3000.sandboxes.easybits.cloud".into());
+        app.sandbox_id = Some("sb_abc12345-6789".into());
+        app.repo_input = "https://github.com/blissito/mi-app.git".into();
+        app.live_at = Some(0); // elapsed grande → sin confetti
+        app.screen = Screen::Live;
+        insta::assert_snapshot!(render_str(&app, 78, 24));
     }
 }

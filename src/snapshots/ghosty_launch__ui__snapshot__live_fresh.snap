@@ -1,0 +1,29 @@
+---
+source: src/ui.rs
+assertion_line: 1033
+expression: "render_str(&app, 78, 24)"
+---
+
+           ╭ en vivo ─────────────────────────────────────────────╮
+           │                                                      │
+           │                        ▄████▄                        │
+           │                       ▐ ◕  ◕ ▌                       │
+           │                       ▐█▀██▀█▌                       │
+           │         Ghosty Launch  ·  que lo haga Ghosty         │
+           │                                                      │
+           │  ● Creando VM persistente                            │
+           │  ● Clonando + instalando + arrancando                │
+           │  ● Verificando que responda                          │
+           │  ● Publicando puerto                                 │
+           │                                                      │
+           │  ● tu app está en vivo                               │
+           │  ]8;;https://sb-abc123-3000.sandboxes.easybits.cloud\→ abrir tu app ↗]8;;\                                                   │
+           │  https://sb-abc123-3000.sandboxes.easybits.cloud     │
+           │                                                      │
+           │  repo: blissito/mi-app                               │
+           │  VM abc12345…                                        │
+           │  100% ─────────────────────────────────────────────  │
+           │                                                      │
+           ╰──────────────────────────────────────────────────────╯
+
+]8;;https://sb-abc123-3000.sandboxes.easybits.cloud\  → abrir tu app ↗]8;;\                     enter/o abrir    l logs    b volver    d destruir    q s

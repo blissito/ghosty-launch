@@ -335,6 +335,10 @@ pub struct App {
     pub logs: Option<String>,
     /// Pantalla a la que volver desde la vista de Logs.
     pub logs_return: Screen,
+    /// Índice del paso que corre ahora (para animar la barra de progreso).
+    pub running_idx: Option<usize>,
+    /// Tick en que empezó el paso en curso (ancla del "creep" de la barra).
+    pub step_anchor: u64,
     /// URL del repo a publicar (pantalla Create).
     pub repo_input: String,
     pub error: Option<String>,
@@ -373,6 +377,8 @@ impl App {
             env_input: String::new(),
             logs: None,
             logs_return: Screen::Live,
+            running_idx: None,
+            step_anchor: 0,
             repo_input: String::new(),
             error: None,
             should_quit: false,
@@ -488,6 +494,33 @@ impl App {
         self.eyes_until = self.tick + dur;
     }
 
+    /// Ratio (0..1) de la barra de progreso del deploy. Cada paso ocupa una banda
+    /// igual; los pasos terminados llenan su banda completa y el paso en curso
+    /// "repta" suave dentro de la suya (asíntota a ~0.9 de la banda) según el tiempo
+    /// transcurrido — así no se ve congelada durante el build largo. Con todos los
+    /// pasos hechos da 1.0 (la barra se dibuja al 100% al quedar en vivo).
+    pub fn launch_ratio(&self) -> f64 {
+        let total = self.steps.len();
+        if total == 0 {
+            return 0.0;
+        }
+        let band = 1.0 / total as f64;
+        let done = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Done)
+            .count();
+        let mut ratio = done as f64 * band;
+        if self.steps.iter().any(|s| s.status == StepStatus::Running) {
+            // Constante de tiempo ~30s (tick ~20/s): sigue avanzando visiblemente
+            // durante un build de minutos sin llegar nunca al borde de la banda.
+            let elapsed = self.tick.saturating_sub(self.step_anchor) as f64;
+            let creep = band * 0.9 * (1.0 - (-elapsed / 600.0).exp());
+            ratio += creep;
+        }
+        ratio.min(1.0)
+    }
+
     /// Aplica un mensaje de tarea async al estado.
     pub fn apply(&mut self, msg: Msg) {
         match msg {
@@ -543,6 +576,13 @@ impl App {
                 status,
                 detail,
             } => {
+                // Al ARRANCAR un paso nuevo, ancla el tick para animar la barra desde
+                // 0 dentro de su banda. (Los polls repiten Running del mismo idx → no
+                // reanclar, si no la barra se reiniciaría en cada poll.)
+                if status == StepStatus::Running && self.running_idx != Some(idx) {
+                    self.running_idx = Some(idx);
+                    self.step_anchor = self.tick;
+                }
                 if let Some(s) = self.steps.get_mut(idx) {
                     s.status = status;
                     if !detail.is_empty() {
@@ -580,6 +620,8 @@ impl App {
         self.sandbox_id = None;
         self.confirm_destroy = false;
         self.logs = None;
+        self.running_idx = None;
+        self.step_anchor = self.tick;
         self.steps = vec![
             Step::new("Creando VM persistente"),
             Step::new("Clonando + instalando + arrancando"),
