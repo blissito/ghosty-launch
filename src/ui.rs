@@ -268,7 +268,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Screen::Customize => &[("enter", "siguiente"), ("⇥", "campo"), ("esc", "volver")],
         Screen::Launching => &[("esc", "cancelar")],
         Screen::Live => &[
-            ("o", "abrir"),
+            ("enter/o", "abrir"),
             ("b", "volver"),
             ("d", "destruir"),
             ("q", "salir"),

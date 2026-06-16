@@ -343,7 +343,7 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             }
             match code {
                 KeyCode::Char('q') => app.should_quit = true,
-                KeyCode::Char('o') => {
+                KeyCode::Char('o') | KeyCode::Enter => {
                     if let Some(url) = &app.url {
                         let _ = open_browser(url);
                     }
