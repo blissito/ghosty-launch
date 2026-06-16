@@ -1,10 +1,12 @@
 //! Ghosty Launch — TUI que clona un repo y lo publica live en una VM de EasyBits.
 //! MVP: camino feliz determinista (llave → consentimiento → deploy → URL live).
 
+mod agent;
 mod app;
 mod debug;
 mod easybits;
 mod oauth;
+mod recipe;
 mod ui;
 
 use anyhow::Result;
@@ -29,6 +31,27 @@ async fn main() -> Result<()> {
     // Modo headless de debug: corre el pipeline imprimiendo crudo, sin TUI.
     if std::env::args().any(|a| a == "--debug") {
         return debug::run().await;
+    }
+    // Prueba e2e del agente de errores (headless): deploy real → falla → agente.
+    if let Some(pos) = std::env::args().position(|a| a == "--agent-e2e") {
+        let repo = std::env::args().nth(pos + 1).ok_or_else(|| {
+            anyhow::anyhow!("uso: --agent-e2e <url-del-repo>")
+        })?;
+        return debug::agent_e2e(repo).await;
+    }
+    // Suelta el agente sobre una VM ya viva con un deploy fallido (sin re-deployar).
+    if let Some(pos) = std::env::args().position(|a| a == "--agent-fix") {
+        let id = std::env::args()
+            .nth(pos + 1)
+            .ok_or_else(|| anyhow::anyhow!("uso: --agent-fix <sandbox_id>"))?;
+        return debug::agent_fix(id).await;
+    }
+    // Destruye una VM por id (cleanup de pruebas).
+    if let Some(pos) = std::env::args().position(|a| a == "--destroy") {
+        let id = std::env::args()
+            .nth(pos + 1)
+            .ok_or_else(|| anyhow::anyhow!("uso: --destroy <sandbox_id>"))?;
+        return debug::destroy(id).await;
     }
 
     enable_raw_mode()?;
@@ -457,6 +480,15 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
         },
         Screen::Error => match code {
             KeyCode::Char('q') => app.should_quit = true,
+            // Que el agente entre al ruedo: diagnostica y arregla desde el log real.
+            KeyCode::Char('a') | KeyCode::Char('A') if app.sandbox_id.is_some() => {
+                if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
+                    let app_name = app.app_name.clone();
+                    let err = app.error.clone().unwrap_or_default();
+                    app.start_fix_agent();
+                    agent::spawn_fix_agent(client, id, app_name, err, tx.clone());
+                }
+            }
             // Ver logs de la VM. Si el fallo fue del health-check ya vienen cargados;
             // si no, los traemos. Solo si hay una VM viva a la cual pedírselos.
             KeyCode::Char('l') | KeyCode::Char('L') if app.sandbox_id.is_some() => {
@@ -479,6 +511,49 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 }
             }
         },
+        Screen::Agent => {
+            // Mientras el agente trabaja, solo `q` sale; el resto se ignora.
+            if app.agent_busy {
+                if matches!(code, KeyCode::Char('q')) {
+                    app.should_quit = true;
+                }
+                return;
+            }
+            match code {
+                KeyCode::Char('q') => app.should_quit = true,
+                KeyCode::Char('l') | KeyCode::Char('L') if app.sandbox_id.is_some() => {
+                    app.logs = None;
+                    app.logs_return = Screen::Agent;
+                    app.screen = Screen::Logs;
+                    if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
+                        app.busy = Some("trayendo logs…".into());
+                        spawn_fetch_logs(client, id, tx.clone());
+                    }
+                }
+                KeyCode::Enter => {
+                    // El agente pide secretos → abrir Envs prellenada con esas claves.
+                    if let Some(agent::Outcome::NeedEnvs { keys, .. }) = app.agent_outcome.clone() {
+                        if let Some(id) = app.sandbox_id.clone() {
+                            app.start_reconfigure_envs(id); // recarga .env
+                            for k in keys {
+                                if !app.envs.iter().any(|(ek, _)| ek == &k) {
+                                    app.envs.push((k, String::new()));
+                                }
+                            }
+                        }
+                    } else {
+                        // Aplicado o se rindió: volver al panel y refrescar.
+                        app.agent_outcome = None;
+                        app.screen = Screen::Apps;
+                        if let Some(client) = app.client.clone() {
+                            app.busy = Some("actualizando…".into());
+                            spawn_list_apps(client, app.email.clone(), tx.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 

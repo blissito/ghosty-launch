@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/loop-engine"]
+
 [package]
 name = "ghosty-launch"
 version = "0.0.1"
@@ -22,6 +25,7 @@ toml = "0.8"
 base64 = "0.22"
 getrandom = "0.2"
 urlencoding = "2"
+loop-engine = { path = "crates/loop-engine" }
 
 [dev-dependencies]
 insta = "1"

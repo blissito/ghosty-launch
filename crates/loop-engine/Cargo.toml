@@ -1,0 +1,30 @@
+[package]
+name = "loop-engine"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.88"
+description = "Motor LLM DeepSeek vendorizado de ghostycode (wire + reasoning replay + retry). Solo lectura desde ghostycode; copiado, no compartido."
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+futures-util = "0.3"
+# Transitive deps of the vendored client/chat code (verbatim from ghostycode):
+# base64 (TTS audio decode), regex (tool-name de-mangling), sha2 (prompt-cache
+# layer hashing + tool-result dedup), async-stream (SSE stream! macro), dirs
+# (SHA-spillover home dir).
+base64 = "0.22.1"
+regex = "1.11"
+sha2 = "0.10"
+async-stream = "0.3.6"
+dirs = "6.0.0"
+
+[dev-dependencies]
+# tempfile backs the tool-result SHA-spillover tests (set_test_spillover_root).
+tempfile = "3.16"

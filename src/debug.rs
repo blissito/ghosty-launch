@@ -97,6 +97,172 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+/// Prueba e2e REAL del agente de errores, sin TUI. Deploya un repo (que esperamos
+/// falle), y cuando falla suelta al agente sobre la VM viva. Reusa el código real:
+/// `spawn_launch` (deploy) + `spawn_fix_agent` (agente) + el `Client` de EasyBits.
+///
+/// Uso:  cargo run -- --agent-e2e https://github.com/owner/repo
+/// (la inferencia va por EasyBits con tu sesión guardada — sin key extra).
+pub async fn agent_e2e(repo: String) -> Result<()> {
+    use crate::app::Msg;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    // 1) Client de EasyBits: EASYBITS_API_KEY, o las credenciales OAuth guardadas.
+    let client = build_client().await?;
+    client.validate().await.map_err(|e| anyhow!("validación EasyBits falló: {e}"))?;
+    println!("== EasyBits OK (la misma llave hostea sandboxes y da inferencia)");
+
+    // 2) Deploy real del repo. Drenamos los Msg igual que el TUI.
+    let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
+    println!("== deployando {repo} …\n");
+    crate::app::spawn_launch(
+        client.clone(),
+        tx.clone(),
+        repo,
+        "agenda-e2e".into(),
+        "#7c3aed".into(),
+        String::new(),
+        Vec::new(),
+    );
+
+    let mut sandbox_id: Option<String> = None;
+    let mut failed_err: Option<String> = None;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(900), rx.recv()).await {
+            Ok(Some(Msg::SandboxCreated { id })) => {
+                println!("   VM creada: {id}");
+                sandbox_id = Some(id);
+            }
+            Ok(Some(Msg::Step { idx, status, detail })) => {
+                println!("   [paso {idx}] {} {detail}", step_label(status));
+            }
+            Ok(Some(Msg::Live { url })) => {
+                println!("\n🟢 LIVE: {url}\n== el deploy NO falló — no hay nada que arreglar.");
+                return Ok(());
+            }
+            Ok(Some(Msg::Failed { error })) => {
+                println!("\n❌ DEPLOY FALLÓ: {error}");
+                failed_err = Some(error);
+                break;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                println!("== canal cerrado en deploy");
+                break;
+            }
+            Err(_) => {
+                println!("== timeout (15 min) en deploy");
+                break;
+            }
+        }
+    }
+
+    let (Some(id), Some(err)) = (sandbox_id, failed_err) else {
+        return Err(anyhow!("no hubo un fallo con VM viva sobre el que actuar"));
+    };
+
+    // 3) El agente entra al ruedo sobre la VM viva.
+    println!("\n========== EL AGENTE ENTRA AL RUEDO ==========\n");
+    crate::agent::spawn_fix_agent(client.clone(), id.clone(), "agenda-e2e".into(), err, tx.clone());
+    loop {
+        match tokio::time::timeout(Duration::from_secs(600), rx.recv()).await {
+            Ok(Some(Msg::AgentStep { text })) => println!("   {text}"),
+            Ok(Some(Msg::Live { url })) => {
+                println!("\n🟢🟢 EL AGENTE LO ARREGLÓ — LIVE: {url}");
+                break;
+            }
+            Ok(Some(Msg::AgentDone { outcome })) => {
+                println!("\n== AGENTE TERMINÓ: {outcome:?}");
+                break;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                println!("== canal cerrado en fase agente");
+                break;
+            }
+            Err(_) => {
+                println!("== timeout (10 min) en fase agente");
+                break;
+            }
+        }
+    }
+    println!("\n== fin. VM {id} sigue viva (gestiónala en el panel del TUI).");
+    Ok(())
+}
+
+/// Suelta el agente sobre una VM YA VIVA con un deploy fallido (sin re-deployar).
+/// Útil para iterar el agente contra el mismo fallo. Uso:
+///   cargo run -- --agent-fix sb_xxx   (inferencia vía EasyBits, sin key extra)
+pub async fn agent_fix(sandbox_id: String) -> Result<()> {
+    use crate::app::Msg;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    let client = build_client().await?;
+    client.validate().await.map_err(|e| anyhow!("validación EasyBits falló: {e}"))?;
+
+    let log = crate::app::fetch_app_log(&client, &sandbox_id).await;
+    let err = crate::app::trim_log(&log);
+    println!("== fallo capturado de {sandbox_id}:\n{err}\n");
+    println!("========== EL AGENTE ENTRA AL RUEDO ==========\n");
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
+    crate::agent::spawn_fix_agent(client.clone(), sandbox_id.clone(), "agenda-e2e".into(), err, tx);
+    loop {
+        match tokio::time::timeout(Duration::from_secs(600), rx.recv()).await {
+            Ok(Some(Msg::AgentStep { text })) => println!("   {text}"),
+            Ok(Some(Msg::Live { url })) => {
+                println!("\n🟢🟢 EL AGENTE LO ARREGLÓ — LIVE: {url}");
+                break;
+            }
+            Ok(Some(Msg::AgentDone { outcome })) => {
+                println!("\n== AGENTE TERMINÓ: {outcome:?}");
+                break;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => {
+                println!("== canal cerrado / timeout en fase agente");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Destruye una VM por id (cleanup de pruebas). Uso: cargo run -- --destroy sb_xxx
+pub async fn destroy(sandbox_id: String) -> Result<()> {
+    let client = build_client().await?;
+    client.destroy(&sandbox_id).await?;
+    println!("✓ VM {sandbox_id} destruida");
+    Ok(())
+}
+
+/// Construye un `Client` de EasyBits desde `EASYBITS_API_KEY` o las credenciales OAuth.
+async fn build_client() -> Result<Client> {
+    if let Ok(k) = std::env::var("EASYBITS_API_KEY") {
+        return Client::new(k);
+    }
+    let mut creds =
+        crate::oauth::load_creds().ok_or_else(|| anyhow!("sin credenciales — conéctate en el TUI primero"))?;
+    if creds.is_expired() {
+        creds = crate::oauth::refresh(&creds)
+            .await
+            .map_err(|e| anyhow!("refresh de token falló: {e}"))?;
+    }
+    Client::new(creds.access_token)
+}
+
+fn step_label(s: crate::app::StepStatus) -> &'static str {
+    use crate::app::StepStatus::*;
+    match s {
+        Pending => "·",
+        Running => "▸",
+        Done => "✓",
+        Failed => "✗",
+    }
+}
+
 fn trunc(s: &str, max: usize) -> String {
     let s = s.trim();
     if s.chars().count() > max {

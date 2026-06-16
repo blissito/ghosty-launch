@@ -137,7 +137,8 @@ pub enum Screen {
     Envs, // variables de entorno a inyectar (auto-cargadas de .env)
     Launching,
     Live,
-    Logs, // visor de /tmp/app.log de la VM
+    Logs,  // visor de /tmp/app.log de la VM
+    Agent, // el agente arreglando el deploy fallido (stream de pasos)
     Error,
 }
 
@@ -288,6 +289,14 @@ pub enum Msg {
     AppsError {
         error: String,
     },
+    /// Un paso del agente de arreglo (lo que piensa/hace) → se muestra en vivo.
+    AgentStep {
+        text: String,
+    },
+    /// El agente terminó: aplicó algo, pide envs, o se rindió.
+    AgentDone {
+        outcome: crate::agent::Outcome,
+    },
 }
 
 pub struct App {
@@ -345,6 +354,12 @@ pub struct App {
     /// URL del repo a publicar (pantalla Create).
     pub repo_input: String,
     pub error: Option<String>,
+    /// Pasos del agente de arreglo (lo que va pensando/haciendo), en vivo.
+    pub agent_steps: Vec<String>,
+    /// El agente sigue corriendo (mientras true, no aceptamos teclas de salida).
+    pub agent_busy: bool,
+    /// Resultado del agente cuando termina (decide el footer/acciones de la pantalla).
+    pub agent_outcome: Option<crate::agent::Outcome>,
     pub should_quit: bool,
 }
 
@@ -385,6 +400,9 @@ impl App {
             reconfig_id: None,
             repo_input: String::new(),
             error: None,
+            agent_steps: Vec::new(),
+            agent_busy: false,
+            agent_outcome: None,
             should_quit: false,
         }
     }
@@ -643,7 +661,23 @@ impl App {
                 self.error = Some(format!("No se pudo leer tus apps: {error}"));
                 self.screen = Screen::Error;
             }
+            Msg::AgentStep { text } => {
+                self.agent_steps.push(text);
+            }
+            Msg::AgentDone { outcome } => {
+                self.agent_busy = false;
+                self.agent_outcome = Some(outcome);
+            }
         }
+    }
+
+    /// Arranca el agente de arreglo sobre la VM del deploy fallido (tecla `a` en Error).
+    pub fn start_fix_agent(&mut self) {
+        self.agent_steps.clear();
+        self.agent_outcome = None;
+        self.agent_busy = true;
+        self.eyes = ("◉", "◉"); // ojos en trance: el agente está en el ruedo
+        self.screen = Screen::Agent;
     }
 
     pub fn start_launch(&mut self) {
@@ -1267,11 +1301,17 @@ pub fn spawn_launch(
         // Receta del contrato (ghosty.toml) o auto-detect.
         // Auto-install: SIN --omit=dev — el build (vite/RRv7) necesita devDeps como
         // @react-router/dev. Tras el build podamos devDeps para liberar disco.
-        let auto_install = manifest.deploy.install.is_none();
-        let install = manifest.deploy.install.clone().unwrap_or_else(|| {
+        // Override local del agente (arreglo durable) gana sobre el ghosty.toml del repo.
+        let ovr = crate::recipe::load(&app_name);
+        let install_recipe = ovr.install.clone().or_else(|| manifest.deploy.install.clone());
+        let build_recipe = ovr.build.clone().or_else(|| manifest.deploy.build.clone());
+        let start_recipe = ovr.start.clone().or_else(|| manifest.deploy.start.clone());
+
+        let auto_install = install_recipe.is_none();
+        let install = install_recipe.unwrap_or_else(|| {
             "if [ -f package-lock.json ]; then npm ci || npm install; else npm install; fi".into()
         });
-        let build_step = match manifest.deploy.build.clone() {
+        let build_step = match build_recipe {
             Some(b) => format!("{b}; "),
             // Auto-detect: corre el build solo si package.json declara script `build`.
             None => "if node -e \"process.exit(require('./package.json').scripts&&require('./package.json').scripts.build?0:1)\" 2>/dev/null; then npm run build; fi; ".into(),
@@ -1282,11 +1322,9 @@ pub fn spawn_launch(
         } else {
             ""
         };
-        let start = manifest
-            .deploy
-            .start
-            .clone()
-            .unwrap_or_else(|| "npm start".into());
+        let start = start_recipe.unwrap_or_else(|| "npm start".into());
+        // Envs del override (arreglo durable del agente) fusionados sobre los del usuario.
+        let envs = crate::recipe::merge_envs(envs, &ovr.envs);
         // Con tamaño m+ EasyBits adjunta un volumen ext4 en /app (no vacío:
         // lost+found) → clonar en /app/src para que `git clone` no falle. Con "s"
         // no hay volumen, /app es directorio normal del rootfs.
@@ -1464,7 +1502,7 @@ pub fn spawn_launch(
 
 /// Corre un comando one-shot en la VM y devuelve su BgStatus final (o None si no
 /// terminó / falló la conexión). Polla cada 2s hasta `max_polls`.
-async fn exec_oneshot(
+pub(crate) async fn exec_oneshot(
     client: &Client,
     id: &str,
     cmd: &str,
@@ -1484,7 +1522,7 @@ async fn exec_oneshot(
 
 /// ¿La app responde en 127.0.0.1:PORT dentro de la VM? Reintenta ~40s mientras
 /// bootea. Usa Node (garantizado en el template) — sin depender de curl. <500 = sano.
-async fn health_check(client: &Client, id: &str) -> bool {
+pub(crate) async fn health_check(client: &Client, id: &str) -> bool {
     let probe = format!(
         "require('http').get({{host:'127.0.0.1',port:{APP_PORT},timeout:2000}},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1)).on('timeout',function(){{this.destroy();process.exit(1)}})"
     );
@@ -1497,7 +1535,7 @@ async fn health_check(client: &Client, id: &str) -> bool {
 }
 
 /// Trae las últimas líneas de `/tmp/app.log` de la VM (stdout/stderr de la app).
-async fn fetch_app_log(client: &Client, id: &str) -> String {
+pub(crate) async fn fetch_app_log(client: &Client, id: &str) -> String {
     match exec_oneshot(client, id, "tail -n 200 /tmp/app.log 2>/dev/null", 15).await {
         Some(st) => {
             let out = format!("{}{}", st.stdout, st.stderr);
@@ -1631,7 +1669,7 @@ pub fn spawn_reconfigure(
     });
 }
 
-fn trim_log(s: &str) -> String {
+pub(crate) fn trim_log(s: &str) -> String {
     let s = s.trim();
     if s.len() > 200 {
         format!("…{}", &s[s.len() - 200..])

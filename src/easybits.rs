@@ -80,6 +80,18 @@ impl Client {
         format!("{}/api/v2{}", self.base_url, path)
     }
 
+    /// Bearer de EasyBits (la misma llave que hostea sandboxes). Sirve para la API
+    /// de inferencia, que vive bajo la misma autenticación.
+    pub fn bearer(&self) -> &str {
+        &self.api_key
+    }
+
+    /// Endpoint de inferencia OpenAI-compatible de EasyBits. La llave de EasyBits ya
+    /// incluye inferencia (DeepSeek v4-pro) → el agente la usa sin pedir nada extra.
+    pub fn llm_base_url(&self) -> String {
+        format!("{}/api/v2/llm/v1", self.base_url)
+    }
+
     /// GET /api/v2/me — valida la llave y devuelve el dueño.
     pub async fn validate(&self) -> Result<Me> {
         let resp = self

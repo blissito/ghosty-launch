@@ -36,6 +36,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Screen::Launching => ("publicando", launch(app)),
         Screen::Live => ("en vivo", launch(app)),
         Screen::Logs => ("logs", logs_screen(app)),
+        Screen::Agent => ("agente", agent_screen(app)),
         Screen::Error => ("error", error(app)),
     };
 
@@ -161,6 +162,8 @@ fn hero(app: &App) -> Vec<Line<'static>> {
         Screen::Error => ("×", "×"),
         // Trabajando: cerrados (concentrado) con transiciones a ojos en trance.
         Screen::Launching => crate::app::working_eyes(app.tick),
+        // El agente en el ruedo: ojos en trance mientras razona.
+        Screen::Agent if app.agent_busy => crate::app::working_eyes(app.tick),
         _ => app.eyes,
     };
     let mascot = [
@@ -277,7 +280,14 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("q", "salir"),
         ],
         Screen::Logs => &[("r", "recargar"), ("b/esc", "volver"), ("q", "salir")],
-        Screen::Error => &[("l", "logs"), ("enter", "volver al panel"), ("q", "salir")],
+        Screen::Agent if app.agent_busy => &[("q", "salir")],
+        Screen::Agent => &[("l", "logs"), ("enter", "continuar"), ("q", "salir")],
+        Screen::Error => &[
+            ("a", "que lo arregle el agente"),
+            ("l", "logs"),
+            ("enter", "volver al panel"),
+            ("q", "salir"),
+        ],
     };
 
     // En live: un hyperlink OSC 8 clickeable ("→ abrir ↗") cuyo destino es la URL
@@ -862,6 +872,54 @@ fn error(app: &App) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(err, Style::default().fg(TEXT))),
     ]
+}
+
+fn agent_screen(app: &App) -> Vec<Line<'static>> {
+    let mut out = vec![
+        Line::from(Span::styled(
+            "El agente en el ruedo  ·  diagnostica y arregla",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    // Últimos pasos que caben cómodos.
+    for s in app.agent_steps.iter().rev().take(12).rev() {
+        out.push(Line::from(Span::styled(
+            truncate(s, 72),
+            Style::default().fg(DIM),
+        )));
+    }
+
+    if app.agent_busy {
+        let frame = SPINNER[(app.tick % 10) as usize];
+        out.push(Line::from(""));
+        out.push(Line::from(vec![
+            Span::styled(format!("{frame} "), Style::default().fg(ACCENT)),
+            Span::styled("pensando…", Style::default().fg(DIM)),
+        ]));
+    } else if let Some(outcome) = &app.agent_outcome {
+        out.push(Line::from(""));
+        let (icon, color, summary) = match outcome {
+            crate::agent::Outcome::Applied { summary } => ("✓", ACCENT, summary),
+            crate::agent::Outcome::NeedEnvs { summary, .. } => ("→", ACCENT, summary),
+            crate::agent::Outcome::GaveUp { summary } => ("×", ERROR, summary),
+        };
+        out.push(Line::from(vec![
+            Span::styled(
+                format!("{icon} "),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(truncate(summary, 70), Style::default().fg(TEXT)),
+        ]));
+        if let crate::agent::Outcome::NeedEnvs { keys, .. } = outcome {
+            out.push(Line::from(Span::styled(
+                format!("enter → configurar: {}", keys.join(", ")),
+                Style::default().fg(DIM),
+            )));
+        }
+    }
+    out
 }
 
 fn logs_screen(app: &App) -> Vec<Line<'static>> {
