@@ -1,0 +1,25 @@
+---
+source: src/ui.rs
+assertion_line: 948
+expression: "render_str(&app, 78, 20)"
+---
+
+      ╭ variables ──────────────────────────────────────────────────────╮
+      │                                                                 │
+      │                             ▄████▄                              │
+      │                            ▐ ●  ● ▌                             │
+      │                            ▐█▀██▀█▌                             │
+      │              Ghosty Launch  ·  que lo haga Ghosty               │
+      │                                                                 │
+      │  Variables de entorno                                           │
+      │                                                                 │
+      │    DATABASE_URL = ••••••••••••                                  │
+      │    API_KEY = ••••••••••••                                       │
+      │                                                                 │
+      │  › CLAVE=valor▏                                                 │
+      │                                                                 │
+      │  enter agrega · clave sin valor la quita · enter vacío publica  │
+      │                                                                 │
+      ╰─────────────────────────────────────────────────────────────────╯
+
+   enter agregar/publicar    esc volver

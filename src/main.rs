@@ -127,6 +127,17 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                     app.repo_input
                         .push_str(text.split_whitespace().next().unwrap_or("").trim());
                 }
+                // En Envs, pegar texto multilínea (un .env entero) hace upsert de
+                // cada línea KEY=VALUE; una sola línea va al buffer para editar.
+                Event::Paste(text) if app.screen == Screen::Envs => {
+                    if text.contains('\n') {
+                        for line in text.lines() {
+                            app.upsert_env(line);
+                        }
+                    } else {
+                        app.env_input.push_str(text.trim());
+                    }
+                }
                 Event::Paste(text) if app.screen == Screen::Customize => {
                     let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
                     if app.focus == app::FOCUS_LOGO {
@@ -280,14 +291,9 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                     app.focus += 1;
                 }
                 KeyCode::Enter => {
-                    if let Some(client) = app.client.clone() {
-                        app.app_name = app.key_input.clone();
-                        let accent = app::chosen_accent(app);
-                        let logo = app.logo_input.clone();
-                        let repo = app.repo_input.clone();
-                        app.start_launch();
-                        spawn_launch(client, tx.clone(), repo, app.app_name.clone(), accent, logo);
-                    }
+                    // Antes de lanzar: pasar por las variables de entorno.
+                    app.app_name = app.key_input.clone();
+                    app.start_envs();
                 }
                 // Fila de color.
                 _ if app.focus == app::FOCUS_COLOR => match code {
@@ -323,6 +329,39 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 _ => {}
             }
         }
+        Screen::Envs => match code {
+            KeyCode::Esc => app.screen = Screen::Customize,
+            KeyCode::Backspace => {
+                app.env_input.pop();
+            }
+            KeyCode::Enter => {
+                // Con texto: agrega/actualiza la variable y limpia el buffer.
+                // Vacío: publica con las envs acumuladas.
+                if app.env_input.trim().is_empty() {
+                    if let Some(client) = app.client.clone() {
+                        let accent = app::chosen_accent(app);
+                        let logo = app.logo_input.clone();
+                        let repo = app.repo_input.clone();
+                        let envs = app.envs.clone();
+                        app.start_launch();
+                        spawn_launch(
+                            client,
+                            tx.clone(),
+                            repo,
+                            app.app_name.clone(),
+                            accent,
+                            logo,
+                            envs,
+                        );
+                    }
+                } else {
+                    app.upsert_env(&app.env_input.clone());
+                    app.env_input.clear();
+                }
+            }
+            KeyCode::Char(c) => app.env_input.push(c),
+            _ => {}
+        },
         Screen::Launching => {
             if code == KeyCode::Esc {
                 app.should_quit = true;

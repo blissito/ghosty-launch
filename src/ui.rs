@@ -32,6 +32,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Screen::Create => ("repo", create_screen(app)),
         Screen::Consent => ("consentimiento", consent(app)),
         Screen::Customize => ("personaliza", customize(app)),
+        Screen::Envs => ("variables", envs_screen(app)),
         Screen::Launching => ("publicando", launch(app)),
         Screen::Live => ("en vivo", launch(app)),
         Screen::Error => ("error", error(app)),
@@ -266,6 +267,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Screen::Create => &[("enter", "publicar"), ("esc", "volver")],
         Screen::Consent => &[("y", "publicar"), ("x", "cerrar sesión"), ("q", "salir")],
         Screen::Customize => &[("enter", "siguiente"), ("⇥", "campo"), ("esc", "volver")],
+        Screen::Envs => &[("enter", "agregar/publicar"), ("esc", "volver")],
         Screen::Launching => &[("esc", "cancelar")],
         Screen::Live => &[
             ("enter/o", "abrir"),
@@ -684,6 +686,56 @@ fn customize(app: &App) -> Vec<Line<'static>> {
     out
 }
 
+fn envs_screen(app: &App) -> Vec<Line<'static>> {
+    let blink = (app.tick / 8).is_multiple_of(2);
+    let mut out = vec![
+        Line::from(Span::styled(
+            "Variables de entorno",
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    // Lista actual (auto-cargada de .env + lo tecleado). Valores enmascarados.
+    if app.envs.is_empty() {
+        out.push(Line::from(Span::styled(
+            "Sin variables. Teclea CLAVE=valor o pega tu .env.",
+            Style::default().fg(DIM),
+        )));
+    } else {
+        for (k, v) in &app.envs {
+            let masked: String = "•".repeat(v.chars().count().clamp(3, 12));
+            out.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(k.clone(), Style::default().fg(ACCENT)),
+                Span::styled(" = ", Style::default().fg(DIM)),
+                Span::styled(masked, Style::default().fg(DIM)),
+            ]));
+        }
+    }
+
+    // Buffer de entrada.
+    out.push(Line::from(""));
+    let cursor = if blink { "▏" } else { " " };
+    let val = if app.env_input.is_empty() {
+        Span::styled("CLAVE=valor", Style::default().fg(DIM))
+    } else {
+        Span::styled(app.env_input.clone(), Style::default().fg(TEXT))
+    };
+    out.push(Line::from(vec![
+        Span::styled("› ", Style::default().fg(ACCENT)),
+        val,
+        Span::styled(cursor.to_string(), Style::default().fg(ACCENT)),
+    ]));
+
+    out.push(Line::from(""));
+    out.push(Line::from(Span::styled(
+        "enter agrega · clave sin valor la quita · enter vacío publica",
+        Style::default().fg(DIM),
+    )));
+    out
+}
+
 fn parse_hex(s: &str) -> Option<Color> {
     let h = crate::app::normalize_hex(s)?;
     let h = h.trim_start_matches('#');
@@ -882,6 +934,17 @@ mod snapshot {
         app.screen = Screen::Customize;
         app.key_input = "Mi Tienda".into();
         app.accent_idx = 2;
+        insta::assert_snapshot!(render_str(&app, 78, 20));
+    }
+
+    #[test]
+    fn envs() {
+        let mut app = App::new();
+        app.screen = Screen::Envs;
+        app.envs = vec![
+            ("DATABASE_URL".into(), "postgres://localhost/app".into()),
+            ("API_KEY".into(), "sk-secret-123".into()),
+        ];
         insta::assert_snapshot!(render_str(&app, 78, 20));
     }
 

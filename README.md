@@ -26,8 +26,9 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/blissito/ghosty-launch/mai
 1. **Conéctate** — `enter` abre tu navegador para autorizar con EasyBits (OAuth, sin pegar llaves). La sesión se guarda; el próximo run reconecta solo. (`x` cierra sesión / cambia de cuenta.)
 2. **Repo** — pega la URL de tu repo de GitHub (público).
 3. **Personaliza** (solo apps) — nombre, color de acento y logo.
-4. **Publica** — según el tipo de repo (ver abajo).
-5. **En vivo** — tu URL pública. `o` abre, `b` vuelve al panel, `d` destruye.
+4. **Variables de entorno** (solo apps) — Ghosty auto-carga tu `.env` local; las revisas, editas y se inyectan a la app. Ver abajo.
+5. **Publica** — según el tipo de repo (ver abajo).
+6. **En vivo** — tu URL pública. `o` abre, `b` vuelve al panel, `d` destruye.
 
 **Lo único que necesitas:** una cuenta EasyBits (<a href="https://www.easybits.cloud/login" target="_blank" rel="noopener noreferrer">signup</a>).
 
@@ -80,6 +81,24 @@ Apps reales (RRv7, vite, Next) necesitan más RAM y disco que una micro-VM. Ghos
 `m`/`l`/`xl` requieren plan de pago en EasyBits (las VMs grandes cuestan). El estático (CDN) sigue **sin cargo**.
 
 Apps personalizadas leen `APP_NAME` / `APP_ACCENT` / `APP_LOGO` del entorno (Ghosty los inyecta). Ver `examples/node-hello/`.
+
+### Variables de entorno (`.env`)
+
+Tu app real necesita sus propias variables (`DATABASE_URL`, API keys, etc.). Como el repo se clona **público** en la VM, esos secretos no van en git — Ghosty los inyecta en el arranque.
+
+En la pantalla **Variables** (entre *personaliza* y *publica*):
+
+- **Auto-carga `.env`** del directorio donde corres `ghosty-launch` (no del repo). Los valores se muestran enmascarados.
+- Teclea `CLAVE=valor` + `enter` para **agregar o actualizar** una variable.
+- `CLAVE=` (sin valor) + `enter` la **quita**.
+- Pega un `.env` entero (multilínea) y se cargan todas sus líneas de una.
+- `enter` con el campo **vacío** publica con las variables acumuladas.
+- `esc` regresa a personalizar.
+
+Detalles:
+- Las claves deben ser válidas para shell (`[A-Za-z_][A-Za-z0-9_]*`); los valores se quotean a prueba de inyección.
+- `APP_NAME` / `APP_ACCENT` / `APP_LOGO` / `PORT` los pone Ghosty y **siempre ganan** sobre lo que definas con esos nombres.
+- El `.env` se lee de tu cwd local, así que mantenlo en tu `.gitignore` — nunca se sube al repo.
 
 ## Configuración (opcional)
 

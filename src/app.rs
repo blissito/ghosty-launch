@@ -111,9 +111,65 @@ pub enum Screen {
     Create, // pega la URL del repo a publicar
     Consent,
     Customize,
+    Envs, // variables de entorno a inyectar (auto-cargadas de .env)
     Launching,
     Live,
     Error,
+}
+
+/// ¿Es `s` una clave de env válida para shell? `[A-Za-z_][A-Za-z0-9_]*`.
+pub fn is_env_key(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Envuelve un valor en comillas simples a prueba de shell (cualquier `'`
+/// interno se cierra/escapa/reabre: `'\''`).
+pub fn sh_squote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Parsea contenido tipo dotenv → pares (clave, valor). Ignora líneas vacías y
+/// comentarios (`#`), tolera `export KEY=…` y quita comillas que envuelvan el valor.
+pub fn parse_dotenv(content: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = k.trim().to_string();
+        if !is_env_key(&key) {
+            continue;
+        }
+        let mut val = v.trim();
+        // Quita un par de comillas envolventes (dobles o simples).
+        if val.len() >= 2
+            && ((val.starts_with('"') && val.ends_with('"'))
+                || (val.starts_with('\'') && val.ends_with('\'')))
+        {
+            val = &val[1..val.len() - 1];
+        }
+        // Última definición gana (igual que dotenv).
+        out.retain(|(ek, _): &(String, String)| ek != &key);
+        out.push((key, val.to_string()));
+    }
+    out
+}
+
+/// Lee `.env` del directorio de trabajo actual; vacío si no existe o falla.
+pub fn load_dotenv() -> Vec<(String, String)> {
+    std::fs::read_to_string(".env")
+        .map(|c| parse_dotenv(&c))
+        .unwrap_or_default()
 }
 
 /// Prefijo en el nombre de la VM que marca "esta app la publicó Ghosty Launch".
@@ -238,6 +294,10 @@ pub struct App {
     pub custom_hex: String,
     /// Ruta local o URL del logo (drag&drop pega la ruta).
     pub logo_input: String,
+    /// Variables de entorno a inyectar a la app (auto-cargadas de `.env`, editables).
+    pub envs: Vec<(String, String)>,
+    /// Buffer de la pantalla Envs: se teclea `CLAVE=valor` y Enter lo agrega.
+    pub env_input: String,
     /// URL del repo a publicar (pantalla Create).
     pub repo_input: String,
     pub error: Option<String>,
@@ -272,6 +332,8 @@ impl App {
             focus: 0,
             custom_hex: "#".to_string(),
             logo_input: String::new(),
+            envs: Vec::new(),
+            env_input: String::new(),
             repo_input: String::new(),
             error: None,
             should_quit: false,
@@ -293,6 +355,7 @@ impl App {
         match self.screen {
             Screen::KeyEntry if self.paste_mode => Some(&mut self.key_input),
             Screen::Create => Some(&mut self.repo_input),
+            Screen::Envs => Some(&mut self.env_input),
             Screen::Customize => match self.focus {
                 FOCUS_NAME => Some(&mut self.key_input),
                 FOCUS_LOGO => Some(&mut self.logo_input),
@@ -331,8 +394,36 @@ impl App {
         self.custom_hex = "#".into();
         self.focus = 0;
         self.error = None;
+        // Pre-carga las envs del `.env` local (si lo hay); el user las edita luego.
+        self.envs = load_dotenv();
+        self.env_input.clear();
         self.repo_input = App::ref_repo();
         self.screen = Screen::Create;
+    }
+
+    /// Pasa a la pantalla de variables de entorno (tras personalizar).
+    pub fn start_envs(&mut self) {
+        self.env_input.clear();
+        self.screen = Screen::Envs;
+    }
+
+    /// Aplica `CLAVE=valor` a la lista: agrega/actualiza; con valor vacío elimina
+    /// la clave. Ignora entradas con clave inválida. Devuelve true si tocó algo.
+    pub fn upsert_env(&mut self, line: &str) -> bool {
+        let line = line.trim();
+        let Some((k, v)) = line.split_once('=') else {
+            return false;
+        };
+        let key = k.trim().to_string();
+        if !is_env_key(&key) {
+            return false;
+        }
+        let val = v.trim().to_string();
+        self.envs.retain(|(ek, _)| ek != &key);
+        if !val.is_empty() {
+            self.envs.push((key, val));
+        }
+        true
     }
 
     /// Avanza la animación de ojos (llamar cada frame). Idle = expresiones random
@@ -932,6 +1023,7 @@ pub fn spawn_launch(
     app_name: String,
     accent: String,
     logo: String,
+    envs: Vec<(String, String)>,
 ) {
     tokio::spawn(async move {
         let ref_repo = repo_https(&repo); // normaliza SSH/slug → https público
@@ -1059,8 +1151,16 @@ pub fn spawn_launch(
         } else {
             String::new()
         };
+        // Envs del usuario (de .env o tecleadas) — van ANTES de las APP_*/PORT para
+        // que nuestra personalización y el puerto siempre ganen. Cada valor va
+        // quoteado a prueba de shell.
+        let user_env: String = envs
+            .iter()
+            .filter(|(k, _)| is_env_key(k))
+            .map(|(k, v)| format!("{k}={} ", sh_squote(v)))
+            .collect();
         let cmd = format!(
-            "set -e; {node_env}rm -rf {workdir}; mkdir -p {workdir}; git clone --depth 1 {ref_repo} {workdir}; cd {workdir}; {install}; {build_step}{prune}(APP_NAME='{app_name}' APP_ACCENT='{accent}' APP_LOGO='{logo_url}' PORT={APP_PORT} setsid nohup {start} > /tmp/app.log 2>&1 &); sleep 2; echo GHOSTY_DEPLOY_DONE"
+            "set -e; {node_env}rm -rf {workdir}; mkdir -p {workdir}; git clone --depth 1 {ref_repo} {workdir}; cd {workdir}; {install}; {build_step}{prune}({user_env}APP_NAME='{app_name}' APP_ACCENT='{accent}' APP_LOGO='{logo_url}' PORT={APP_PORT} setsid nohup {start} > /tmp/app.log 2>&1 &); sleep 2; echo GHOSTY_DEPLOY_DONE"
         );
         // Deploy en background + polling (resiliente: la VM saturada por el build no
         // tira la conexión, cada poll es una llamada corta y reintentable).
@@ -1179,5 +1279,63 @@ fn trim_log(s: &str) -> String {
         format!("…{}", &s[s.len() - 200..])
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dotenv_parse_basico() {
+        let env = parse_dotenv(
+            "# comentario\nexport FOO=bar\nBAZ=\"con espacios\"\nQUX='simple'\n\nMALA LINEA\n=sin_clave\n",
+        );
+        assert_eq!(
+            env,
+            vec![
+                ("FOO".into(), "bar".into()),
+                ("BAZ".into(), "con espacios".into()),
+                ("QUX".into(), "simple".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn dotenv_ultima_definicion_gana() {
+        let env = parse_dotenv("A=1\nA=2\n");
+        assert_eq!(env, vec![("A".into(), "2".into())]);
+    }
+
+    #[test]
+    fn claves_validas() {
+        assert!(is_env_key("FOO_BAR"));
+        assert!(is_env_key("_x9"));
+        assert!(!is_env_key("9foo"));
+        assert!(!is_env_key("foo-bar"));
+        assert!(!is_env_key(""));
+    }
+
+    #[test]
+    fn squote_a_prueba_de_inyeccion() {
+        // Un valor malicioso queda contenido dentro de comillas simples.
+        assert_eq!(sh_squote("a'; rm -rf /; '"), "'a'\\''; rm -rf /; '\\'''");
+        assert_eq!(sh_squote("simple"), "'simple'");
+    }
+
+    #[test]
+    fn upsert_agrega_actualiza_y_quita() {
+        let mut app = App::new();
+        assert!(app.upsert_env("FOO=bar"));
+        assert_eq!(app.envs, vec![("FOO".into(), "bar".into())]);
+        // Actualiza el valor existente, no duplica.
+        app.upsert_env("FOO=baz");
+        assert_eq!(app.envs, vec![("FOO".into(), "baz".into())]);
+        // Valor vacío elimina la clave.
+        app.upsert_env("FOO=");
+        assert!(app.envs.is_empty());
+        // Clave inválida se ignora.
+        assert!(!app.upsert_env("1bad=x"));
+        assert!(!app.upsert_env("sin_igual"));
     }
 }
