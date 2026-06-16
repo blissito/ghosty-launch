@@ -282,12 +282,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Screen::Logs => &[("r", "recargar"), ("b/esc", "volver"), ("q", "salir")],
         Screen::Agent if app.agent_busy => &[("q", "salir")],
         Screen::Agent => &[("l", "logs"), ("enter", "continuar"), ("q", "salir")],
-        Screen::Error => &[
-            ("a", "que lo arregle el agente"),
-            ("l", "logs"),
-            ("enter", "volver al panel"),
-            ("q", "salir"),
-        ],
+        Screen::Error => &[("l", "logs"), ("enter", "volver al panel"), ("q", "salir")],
     };
 
     // En live: un hyperlink OSC 8 clickeable ("→ abrir ↗") cuyo destino es la URL

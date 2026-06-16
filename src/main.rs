@@ -97,6 +97,13 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
             app.apply(msg);
         }
 
+        // Auto-arranque: si un deploy falló con VM viva, el agente entra al ruedo solo.
+        if let Some((id, err)) = app.agent_pending.take() {
+            if let Some(client) = app.client.clone() {
+                agent::spawn_fix_agent(client, id, app.app_name.clone(), err, tx.clone());
+            }
+        }
+
         app.tick = app.tick.wrapping_add(1);
         app.tick_eyes();
         terminal.draw(|f| ui::render(f, &app))?;
@@ -480,15 +487,6 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
         },
         Screen::Error => match code {
             KeyCode::Char('q') => app.should_quit = true,
-            // Que el agente entre al ruedo: diagnostica y arregla desde el log real.
-            KeyCode::Char('a') | KeyCode::Char('A') if app.sandbox_id.is_some() => {
-                if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
-                    let app_name = app.app_name.clone();
-                    let err = app.error.clone().unwrap_or_default();
-                    app.start_fix_agent();
-                    agent::spawn_fix_agent(client, id, app_name, err, tx.clone());
-                }
-            }
             // Ver logs de la VM. Si el fallo fue del health-check ya vienen cargados;
             // si no, los traemos. Solo si hay una VM viva a la cual pedírselos.
             KeyCode::Char('l') | KeyCode::Char('L') if app.sandbox_id.is_some() => {

@@ -360,6 +360,9 @@ pub struct App {
     pub agent_busy: bool,
     /// Resultado del agente cuando termina (decide el footer/acciones de la pantalla).
     pub agent_outcome: Option<crate::agent::Outcome>,
+    /// Cuando un deploy falla con VM viva, dejamos aquí `(id, error)` para que el loop
+    /// de `main` arranque el agente automáticamente (apply no puede spawnear tareas).
+    pub agent_pending: Option<(String, String)>,
     pub should_quit: bool,
 }
 
@@ -403,6 +406,7 @@ impl App {
             agent_steps: Vec::new(),
             agent_busy: false,
             agent_outcome: None,
+            agent_pending: None,
             should_quit: false,
         }
     }
@@ -479,6 +483,7 @@ impl App {
     /// Abre la pantalla de Envs para RECONFIGURAR una app existente: pre-carga el
     /// `.env` local y marca la VM a reiniciar. Al confirmar se reinicia en sitio.
     pub fn start_reconfigure_envs(&mut self, id: String) {
+        self.sandbox_id = Some(id.clone()); // VM viva → el agente la puede arreglar si falla
         self.reconfig_id = Some(id);
         self.envs = load_dotenv();
         self.env_input.clear();
@@ -648,8 +653,15 @@ impl App {
                 self.screen = Screen::Live;
             }
             Msg::Failed { error } => {
-                self.error = Some(error);
-                self.screen = Screen::Error;
+                // Con VM viva el agente entra al ruedo AUTOMÁTICAMENTE (lo que esperas
+                // por default). Sin VM (fallo de infra) no hay nada que arreglar → Error.
+                if let Some(id) = self.sandbox_id.clone() {
+                    self.start_fix_agent();
+                    self.agent_pending = Some((id, error));
+                } else {
+                    self.error = Some(error);
+                    self.screen = Screen::Error;
+                }
             }
             Msg::Logs { text } => {
                 self.busy = None;
