@@ -448,6 +448,8 @@ impl App {
                 FOCUS_COLOR if self.accent_idx == CUSTOM_ACCENT => Some(&mut self.custom_hex),
                 _ => None,
             },
+            // El agente pidiendo un secreto: el input activo es agent_input.
+            Screen::Agent if self.agent_prompt.is_some() => Some(&mut self.agent_input),
             _ => None,
         }
     }

@@ -114,6 +114,16 @@ pub async fn agent_e2e(repo: String) -> Result<()> {
     println!("== EasyBits OK (la misma llave hostea sandboxes y da inferencia)");
 
     // 2) Deploy real del repo. Drenamos los Msg igual que el TUI.
+    // E2E_ENVS="K=V,K2=V2" inyecta envs (para probar que la inyección llega a la app).
+    let envs: Vec<(String, String)> = std::env::var("E2E_ENVS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect();
+    if !envs.is_empty() {
+        println!("== inyectando envs: {:?}", envs.iter().map(|(k, _)| k).collect::<Vec<_>>());
+    }
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     println!("== deployando {repo} …\n");
     crate::app::spawn_launch(
@@ -123,7 +133,7 @@ pub async fn agent_e2e(repo: String) -> Result<()> {
         "agenda-e2e".into(),
         "#7c3aed".into(),
         String::new(),
-        Vec::new(),
+        envs,
     );
 
     let mut sandbox_id: Option<String> = None;

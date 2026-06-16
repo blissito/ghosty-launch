@@ -180,6 +180,15 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                         app.key_input.push_str(clean.trim());
                     }
                 }
+                // El agente pidiendo un secreto: pegar el connection string lo mete al input
+                // (un connection string SE PEGA, no se teclea — esto es indispensable).
+                Event::Paste(text)
+                    if app.screen == Screen::Agent && app.agent_prompt.is_some() =>
+                {
+                    let clean: String =
+                        text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                    app.agent_input.push_str(clean.trim());
+                }
                 _ => {}
             }
         }
@@ -518,8 +527,12 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             if app.agent_prompt.is_some() {
                 match code {
                     KeyCode::Enter => {
+                        // No aceptar vacío: si no hay valor, seguimos esperando (no avanza).
+                        if app.agent_input.trim().is_empty() {
+                            return;
+                        }
                         if let Some(reply) = app.agent_reply.take() {
-                            let _ = reply.send(app.agent_input.clone());
+                            let _ = reply.send(app.agent_input.trim().to_string());
                         }
                         app.agent_prompt = None;
                         app.agent_input.clear();
