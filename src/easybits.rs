@@ -365,6 +365,9 @@ async fn ensure_ok_body(resp: reqwest::Response, what: &str) -> Result<reqwest::
     if snippet.is_empty() {
         Err(anyhow!("{what} falló: HTTP {}", status.as_u16()))
     } else {
-        Err(anyhow!("{what} falló: HTTP {} — {snippet}", status.as_u16()))
+        Err(anyhow!(
+            "{what} falló: HTTP {} — {snippet}",
+            status.as_u16()
+        ))
     }
 }

@@ -761,15 +761,14 @@ async fn detect_size(repo: &str) -> &'static str {
             .unwrap_or(0)
     };
     let deps = count("dependencies") + count("devDependencies");
-    let has_build = json
-        .get("scripts")
-        .and_then(|s| s.get("build"))
-        .is_some();
+    let has_build = json.get("scripts").and_then(|s| s.get("build")).is_some();
     let has_workspaces = json.get("workspaces").is_some();
     let heavy = |name: &str| pkg.contains(&format!("\"{name}\""));
     let has_next = heavy("next");
-    let heavy_bundler =
-        heavy("vite") || heavy("@react-router/dev") || heavy("webpack") || heavy("@excalidraw/excalidraw");
+    let heavy_bundler = heavy("vite")
+        || heavy("@react-router/dev")
+        || heavy("webpack")
+        || heavy("@excalidraw/excalidraw");
 
     if has_next || has_workspaces || deps >= 120 {
         "xl"
