@@ -514,6 +514,32 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             }
         },
         Screen::Agent => {
+            // El agente está esperando que teclees un valor (un secreto) → input inline.
+            if app.agent_prompt.is_some() {
+                match code {
+                    KeyCode::Enter => {
+                        if let Some(reply) = app.agent_reply.take() {
+                            let _ = reply.send(app.agent_input.clone());
+                        }
+                        app.agent_prompt = None;
+                        app.agent_input.clear();
+                    }
+                    KeyCode::Esc => {
+                        // Cancela: manda vacío → el agente lo trata como "no provisto".
+                        if let Some(reply) = app.agent_reply.take() {
+                            let _ = reply.send(String::new());
+                        }
+                        app.agent_prompt = None;
+                        app.agent_input.clear();
+                    }
+                    KeyCode::Backspace => {
+                        app.agent_input.pop();
+                    }
+                    KeyCode::Char(c) => app.agent_input.push(c),
+                    _ => {}
+                }
+                return;
+            }
             // Mientras el agente trabaja, solo `q` sale; el resto se ignora.
             if app.agent_busy {
                 if matches!(code, KeyCode::Char('q')) {

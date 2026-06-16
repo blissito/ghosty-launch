@@ -66,12 +66,15 @@ set_start si el comando de arranque está mal. Estos quedan durables (sobreviven
 4. restart para reiniciar con tus cambios, y verifica con run_in_vm que ahora responde en :3000.\n\
 5. finish cuando termines.\n\n\
 REGLA DE ORO sobre secretos: si falta un valor que NO puedes saber (connection string de Mongo/\
-Postgres, API keys, tokens), NO lo inventes. Llama finish con needs_envs listando esas claves y \
-un summary claro; el usuario las proveerá. Para todo lo demás, arréglalo y deja la app verde.\n\n\
+Postgres, API keys, tokens), NO lo inventes y NO te rindas: usa need_secret para pedírselo al \
+usuario en pantalla. Te lo devolverá (ya guardado como env durable); entonces haz restart y \
+verifica que la app responde. Solo usa finish con needs_envs si el usuario NO lo provee.\n\n\
+NARRA en español, breve, antes de cada acción: di qué vas a hacer y qué encontraste (una frase). \
+Eso es lo que ve el usuario.\n\n\
 EFICIENCIA (tienes pasos limitados): el output de las tools viene COMPLETO — no repitas un \
 comando ya ejecutado. Para inspeccionar la app, prueba a correr su start a mano en la VM y LEE el \
-error real antes de teorizar. En cuanto tengas la causa, APLICA el arreglo (set_env/set_start) y \
-restart; no sigas investigando de más. Sé conciso. La app debe escuchar en 127.0.0.1:3000.";
+error real antes de teorizar. En cuanto tengas la causa, APLICA el arreglo (set_env/set_start/\
+need_secret) y restart; no sigas investigando de más. La app debe escuchar en 127.0.0.1:3000.";
 
 /// Lanza el agente de arreglo en una tarea async. Emite `Msg::AgentStep` por paso y
 /// `Msg::AgentDone` al terminar.
@@ -176,16 +179,13 @@ async fn run(
             content: resp.content.clone(),
         });
 
-        // Narra al usuario lo que el agente piensa/dice (los ojos en trance lo acompañan).
+        // Narrativa: mostramos lo que Ghosty DICE (sus bloques Text, en español), no su
+        // pensamiento crudo ni los comandos. Los ojos en trance ya transmiten que piensa.
         for block in &resp.content {
-            match block {
-                ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
+            if let ContentBlock::Text { text, .. } = block {
+                if !text.trim().is_empty() {
                     step(tx, text.trim());
                 }
-                ContentBlock::Thinking { thinking } if !thinking.trim().is_empty() => {
-                    step(tx, &format!("💭 {}", first_line(thinking)));
-                }
-                _ => {}
             }
         }
 
@@ -215,7 +215,7 @@ async fn run(
                 return finish_outcome(&input);
             }
             step(tx, &tool_label(&name, &input));
-            let (content, is_error) = dispatch(client, id, app_name, &name, &input).await;
+            let (content, is_error) = dispatch(client, id, app_name, &name, &input, tx).await;
             results.push(ContentBlock::ToolResult {
                 tool_use_id: call_id,
                 content,
@@ -241,8 +241,35 @@ async fn dispatch(
     app_name: &str,
     name: &str,
     input: &Value,
+    tx: &UnboundedSender<Msg>,
 ) -> (String, bool) {
     match name {
+        "need_secret" => {
+            let key = input["key"].as_str().unwrap_or_default();
+            let why = input["reason"].as_str().unwrap_or("");
+            if !crate::app::is_env_key(key) {
+                return (format!("clave inválida: {key:?}"), true);
+            }
+            // Pide el valor al usuario INLINE y espera su respuesta (back-channel).
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let prompt = if why.is_empty() {
+                format!("Necesito {key}")
+            } else {
+                format!("Necesito {key} — {why}")
+            };
+            let _ = tx.send(Msg::AgentNeedInput { prompt, reply: reply_tx });
+            match reply_rx.await {
+                Ok(v) if !v.trim().is_empty() => {
+                    // Lo guardamos durable de una vez (el agente luego hace restart).
+                    let mut ovr = recipe::load(app_name);
+                    ovr.envs.retain(|(k, _)| k != key);
+                    ovr.envs.push((key.to_string(), v.trim().to_string()));
+                    let _ = recipe::save(app_name, &ovr);
+                    (format!("el usuario proveyó {key}; ya quedó guardado como env durable"), false)
+                }
+                _ => (format!("el usuario no proveyó {key}"), true),
+            }
+        }
         "run_in_vm" => {
             let cmd = input["command"].as_str().unwrap_or_default();
             if cmd.is_empty() {
@@ -392,6 +419,16 @@ fn tools() -> Vec<Tool> {
             json!({"type":"object","properties":{}}),
         ),
         tool(
+            "need_secret",
+            "Pídele al USUARIO un valor secreto que no puedes saber (connection string, API \
+             key, token). Se lo preguntamos en pantalla y te devolvemos lo que teclee, ya \
+             guardado como env durable. Después usa restart para aplicarlo y verifica.",
+            json!({"type":"object","properties":{
+                "key":{"type":"string","description":"nombre del env, ej. DATABASE_URL"},
+                "reason":{"type":"string","description":"por qué lo necesitas, una frase"}},
+                "required":["key"]}),
+        ),
+        tool(
             "finish",
             "Termina. Si aplicaste un arreglo y la app responde, applied=true. Si necesitas \
              que el usuario provea secretos, lista sus claves en needs_envs.",
@@ -414,23 +451,16 @@ fn user_text(text: String) -> Message {
     }
 }
 
+/// Etiqueta humana de la acción (no el comando crudo) — la narrativa la lleva el Text.
 fn tool_label(name: &str, input: &Value) -> String {
     match name {
-        "run_in_vm" => format!("🔧 run_in_vm: {}", first_line(input["command"].as_str().unwrap_or(""))),
-        "read_app_log" => "🔧 read_app_log".into(),
-        "set_env" => format!("🔧 set_env {}", input["key"].as_str().unwrap_or("")),
-        "set_start" => format!("🔧 set_start: {}", input["command"].as_str().unwrap_or("")),
-        "restart" => "🔧 restart".into(),
-        other => format!("🔧 {other}"),
-    }
-}
-
-fn first_line(s: &str) -> String {
-    let line = s.trim().lines().next().unwrap_or("").trim();
-    if line.chars().count() > 80 {
-        format!("{}…", line.chars().take(80).collect::<String>())
-    } else {
-        line.to_string()
+        "run_in_vm" => "   · revisando la VM…".into(),
+        "read_app_log" => "   · releyendo el log…".into(),
+        "set_env" => format!("   · fijando {} (durable)", input["key"].as_str().unwrap_or("")),
+        "set_start" => "   · ajustando el comando de arranque".into(),
+        "restart" => "   · reiniciando la app…".into(),
+        "need_secret" => "   · te pido un dato…".into(),
+        other => format!("   · {other}"),
     }
 }
 

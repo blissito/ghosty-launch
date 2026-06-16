@@ -869,6 +869,25 @@ fn error(app: &App) -> Vec<Line<'static>> {
     ]
 }
 
+/// Word-wrap simple a `w` columnas (la tarjeta es angosta; la narrativa debe leerse).
+fn wrap(s: &str, w: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        if !cur.is_empty() && cur.chars().count() + word.chars().count() + 1 > w {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
 fn agent_screen(app: &App) -> Vec<Line<'static>> {
     let mut out = vec![
         Line::from(Span::styled(
@@ -878,15 +897,44 @@ fn agent_screen(app: &App) -> Vec<Line<'static>> {
         Line::from(""),
     ];
 
-    // Últimos pasos que caben cómodos.
-    for s in app.agent_steps.iter().rev().take(12).rev() {
-        out.push(Line::from(Span::styled(
-            truncate(s, 72),
-            Style::default().fg(DIM),
-        )));
+    // Narrativa: lo que Ghosty DICE (prosa) legible y envuelto; las acciones internas
+    // (líneas que empiezan con "   ·" o 🔎) en tenue. Mostramos las últimas que caben.
+    for s in app.agent_steps.iter().rev().take(8).rev() {
+        let is_action = s.starts_with("   ·") || s.starts_with('🔎');
+        if is_action {
+            out.push(Line::from(Span::styled(
+                truncate(s, 74),
+                Style::default().fg(DIM),
+            )));
+        } else {
+            for (i, l) in wrap(s, 72).into_iter().enumerate() {
+                let prefix = if i == 0 { "» " } else { "  " };
+                out.push(Line::from(Span::styled(
+                    format!("{prefix}{l}"),
+                    Style::default().fg(TEXT),
+                )));
+            }
+        }
     }
 
-    if app.agent_busy {
+    if let Some(prompt) = &app.agent_prompt {
+        // Pidiendo un secreto INLINE — el toque conversacional.
+        out.push(Line::from(""));
+        out.push(Line::from(Span::styled(
+            format!("🔑 {prompt}"),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )));
+        let cursor = if app.tick % 10 < 5 { "▌" } else { " " };
+        out.push(Line::from(vec![
+            Span::styled("> ", Style::default().fg(ACCENT)),
+            Span::styled(app.agent_input.clone(), Style::default().fg(TEXT)),
+            Span::styled(cursor.to_string(), Style::default().fg(ACCENT)),
+        ]));
+        out.push(Line::from(Span::styled(
+            "enter: enviar  ·  esc: cancelar",
+            Style::default().fg(DIM),
+        )));
+    } else if app.agent_busy {
         let frame = SPINNER[(app.tick % 10) as usize];
         out.push(Line::from(""));
         out.push(Line::from(vec![
@@ -894,25 +942,33 @@ fn agent_screen(app: &App) -> Vec<Line<'static>> {
             Span::styled("pensando…", Style::default().fg(DIM)),
         ]));
     } else if let Some(outcome) = &app.agent_outcome {
+        // Outcome card: resultado grande e inequívoco + acción.
         out.push(Line::from(""));
-        let (icon, color, summary) = match outcome {
-            crate::agent::Outcome::Applied { summary } => ("✓", ACCENT, summary),
-            crate::agent::Outcome::NeedEnvs { summary, .. } => ("→", ACCENT, summary),
-            crate::agent::Outcome::GaveUp { summary } => ("×", ERROR, summary),
+        let (icon, color, title) = match outcome {
+            crate::agent::Outcome::Applied { .. } => ("🟢", ACCENT, "Arreglada"),
+            crate::agent::Outcome::NeedEnvs { .. } => ("→", ACCENT, "Necesito algo de ti"),
+            crate::agent::Outcome::GaveUp { .. } => ("×", ERROR, "No pude arreglarla"),
         };
-        out.push(Line::from(vec![
-            Span::styled(
-                format!("{icon} "),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(truncate(summary, 70), Style::default().fg(TEXT)),
-        ]));
-        if let crate::agent::Outcome::NeedEnvs { keys, .. } = outcome {
-            out.push(Line::from(Span::styled(
-                format!("enter → configurar: {}", keys.join(", ")),
-                Style::default().fg(DIM),
-            )));
+        let summary = match outcome {
+            crate::agent::Outcome::Applied { summary }
+            | crate::agent::Outcome::NeedEnvs { summary, .. }
+            | crate::agent::Outcome::GaveUp { summary } => summary,
+        };
+        out.push(Line::from(Span::styled(
+            format!("{icon} {title}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )));
+        for l in wrap(summary, 72) {
+            out.push(Line::from(Span::styled(l, Style::default().fg(TEXT))));
         }
+        let hint = match outcome {
+            crate::agent::Outcome::NeedEnvs { keys, .. } => {
+                format!("enter → configurar: {}", keys.join(", "))
+            }
+            _ => "enter → volver al panel  ·  l → logs".into(),
+        };
+        out.push(Line::from(""));
+        out.push(Line::from(Span::styled(hint, Style::default().fg(DIM))));
     }
     out
 }

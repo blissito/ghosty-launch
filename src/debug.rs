@@ -168,6 +168,11 @@ pub async fn agent_e2e(repo: String) -> Result<()> {
     loop {
         match tokio::time::timeout(Duration::from_secs(600), rx.recv()).await {
             Ok(Some(Msg::AgentStep { text })) => println!("   {text}"),
+            Ok(Some(Msg::AgentNeedInput { prompt, reply })) => {
+                let val = std::env::var("E2E_SECRET").unwrap_or_default();
+                println!("   🔑 {prompt}  → respondo {}", if val.is_empty() { "(vacío = cancelar; setea E2E_SECRET para probar verde)" } else { "E2E_SECRET" });
+                let _ = reply.send(val);
+            }
             Ok(Some(Msg::Live { url })) => {
                 println!("\n🟢🟢 EL AGENTE LO ARREGLÓ — LIVE: {url}");
                 break;
@@ -212,6 +217,11 @@ pub async fn agent_fix(sandbox_id: String) -> Result<()> {
     loop {
         match tokio::time::timeout(Duration::from_secs(600), rx.recv()).await {
             Ok(Some(Msg::AgentStep { text })) => println!("   {text}"),
+            Ok(Some(Msg::AgentNeedInput { prompt, reply })) => {
+                let val = std::env::var("E2E_SECRET").unwrap_or_default();
+                println!("   🔑 {prompt}  → respondo {}", if val.is_empty() { "(vacío = cancelar; setea E2E_SECRET para probar verde)" } else { "E2E_SECRET" });
+                let _ = reply.send(val);
+            }
             Ok(Some(Msg::Live { url })) => {
                 println!("\n🟢🟢 EL AGENTE LO ARREGLÓ — LIVE: {url}");
                 break;

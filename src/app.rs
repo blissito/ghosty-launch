@@ -297,6 +297,12 @@ pub enum Msg {
     AgentDone {
         outcome: crate::agent::Outcome,
     },
+    /// El agente necesita un valor del usuario (p.ej. un secreto) AHORA, sin salir de la
+    /// pantalla. `reply` es el canal de vuelta: la UI manda el valor tecleado.
+    AgentNeedInput {
+        prompt: String,
+        reply: tokio::sync::oneshot::Sender<String>,
+    },
 }
 
 pub struct App {
@@ -363,6 +369,12 @@ pub struct App {
     /// Cuando un deploy falla con VM viva, dejamos aquí `(id, error)` para que el loop
     /// de `main` arranque el agente automáticamente (apply no puede spawnear tareas).
     pub agent_pending: Option<(String, String)>,
+    /// Si Some: el agente está esperando que el usuario teclee un valor (el prompt).
+    pub agent_prompt: Option<String>,
+    /// Buffer de lo que el usuario teclea para el agente (el secreto).
+    pub agent_input: String,
+    /// Canal de vuelta hacia la tarea del agente con el valor tecleado.
+    pub agent_reply: Option<tokio::sync::oneshot::Sender<String>>,
     pub should_quit: bool,
 }
 
@@ -407,6 +419,9 @@ impl App {
             agent_busy: false,
             agent_outcome: None,
             agent_pending: None,
+            agent_prompt: None,
+            agent_input: String::new(),
+            agent_reply: None,
             should_quit: false,
         }
     }
@@ -678,7 +693,14 @@ impl App {
             }
             Msg::AgentDone { outcome } => {
                 self.agent_busy = false;
+                self.agent_prompt = None;
+                self.agent_reply = None;
                 self.agent_outcome = Some(outcome);
+            }
+            Msg::AgentNeedInput { prompt, reply } => {
+                self.agent_prompt = Some(prompt);
+                self.agent_reply = Some(reply);
+                self.agent_input.clear();
             }
         }
     }
@@ -687,6 +709,9 @@ impl App {
     pub fn start_fix_agent(&mut self) {
         self.agent_steps.clear();
         self.agent_outcome = None;
+        self.agent_prompt = None;
+        self.agent_input.clear();
+        self.agent_reply = None;
         self.agent_busy = true;
         self.eyes = ("◉", "◉"); // ojos en trance: el agente está en el ruedo
         self.screen = Screen::Agent;
