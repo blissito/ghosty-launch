@@ -151,6 +151,10 @@ pub async fn agent_e2e(repo: String) -> Result<()> {
                 println!("\n🟢 LIVE: {url}\n== el deploy NO falló — no hay nada que arreglar.");
                 return Ok(());
             }
+            Ok(Some(Msg::LiveUnverified { url })) => {
+                println!("\n🟡 corre pero la URL pública no responde (proxy/TLS): {url}");
+                return Ok(());
+            }
             Ok(Some(Msg::Failed { error })) => {
                 println!("\n❌ DEPLOY FALLÓ: {error}");
                 failed_err = Some(error);
@@ -174,7 +178,8 @@ pub async fn agent_e2e(repo: String) -> Result<()> {
 
     // 3) El agente entra al ruedo sobre la VM viva.
     println!("\n========== EL AGENTE ENTRA AL RUEDO ==========\n");
-    crate::agent::spawn_fix_agent(client.clone(), id.clone(), "agenda-e2e".into(), err, tx.clone());
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    crate::agent::spawn_fix_agent(client.clone(), id.clone(), "agenda-e2e".into(), err, cancel, tx.clone());
     loop {
         match tokio::time::timeout(Duration::from_secs(600), rx.recv()).await {
             Ok(Some(Msg::AgentStep { text })) => println!("   {text}"),
@@ -184,7 +189,11 @@ pub async fn agent_e2e(repo: String) -> Result<()> {
                 let _ = reply.send(val);
             }
             Ok(Some(Msg::Live { url })) => {
-                println!("\n🟢🟢 EL AGENTE LO ARREGLÓ — LIVE: {url}");
+                println!("\n🟢🟢 EL AGENTE LO ARREGLÓ — LIVE (URL pública OK): {url}");
+                break;
+            }
+            Ok(Some(Msg::LiveUnverified { url })) => {
+                println!("\n🟡 corre, pero la URL pública NO responde (proxy/TLS): {url}");
                 break;
             }
             Ok(Some(Msg::AgentDone { outcome })) => {
@@ -223,7 +232,8 @@ pub async fn agent_fix(sandbox_id: String) -> Result<()> {
     println!("========== EL AGENTE ENTRA AL RUEDO ==========\n");
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
-    crate::agent::spawn_fix_agent(client.clone(), sandbox_id.clone(), "agenda-e2e".into(), err, tx);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    crate::agent::spawn_fix_agent(client.clone(), sandbox_id.clone(), "agenda-e2e".into(), err, cancel, tx);
     loop {
         match tokio::time::timeout(Duration::from_secs(600), rx.recv()).await {
             Ok(Some(Msg::AgentStep { text })) => println!("   {text}"),
@@ -233,7 +243,11 @@ pub async fn agent_fix(sandbox_id: String) -> Result<()> {
                 let _ = reply.send(val);
             }
             Ok(Some(Msg::Live { url })) => {
-                println!("\n🟢🟢 EL AGENTE LO ARREGLÓ — LIVE: {url}");
+                println!("\n🟢🟢 EL AGENTE LO ARREGLÓ — LIVE (URL pública OK): {url}");
+                break;
+            }
+            Ok(Some(Msg::LiveUnverified { url })) => {
+                println!("\n🟡 corre, pero la URL pública NO responde (proxy/TLS): {url}");
                 break;
             }
             Ok(Some(Msg::AgentDone { outcome })) => {
@@ -285,6 +299,25 @@ pub async fn destroy(sandbox_id: String) -> Result<()> {
     let client = build_client().await?;
     client.destroy(&sandbox_id).await?;
     println!("✓ VM {sandbox_id} destruida");
+    Ok(())
+}
+
+/// Corre un comando crudo en una VM viva e imprime stdout/stderr/exit.
+/// Uso: cargo run -- --exec <sandbox_id> "<comando>"
+pub async fn exec(sandbox_id: String, cmd: String) -> Result<()> {
+    let client = build_client().await?;
+    match crate::app::exec_oneshot(&client, &sandbox_id, &cmd, 30).await {
+        Some(st) => {
+            println!("exit={:?}", st.exit_code);
+            if !st.stdout.is_empty() {
+                println!("--- stdout ---\n{}", st.stdout);
+            }
+            if !st.stderr.is_empty() {
+                println!("--- stderr ---\n{}", st.stderr);
+            }
+        }
+        None => println!("(el comando no terminó a tiempo / falló la conexión)"),
+    }
     Ok(())
 }
 

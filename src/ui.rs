@@ -18,6 +18,7 @@ const TEXT: Color = Color::Rgb(230, 230, 236);
 const DIM: Color = Color::Rgb(92, 92, 108);
 const SUCCESS: Color = Color::Rgb(122, 211, 161);
 const ERROR: Color = Color::Rgb(245, 110, 130);
+const WARN: Color = Color::Rgb(240, 190, 90);
 
 // Fantasmita de bloque (el de adentro del chat de ghostycode). Ojos = `eye`.
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -272,6 +273,13 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
         Screen::Envs => &[("enter", "agregar/publicar"), ("esc", "volver")],
         Screen::Launching => &[("m", "audio"), ("esc", "cancelar")],
+        Screen::Live if !app.public_verified => &[
+            ("r", "reintentar"),
+            ("e", "envs"),
+            ("l", "logs"),
+            ("d", "destruir"),
+            ("q", "salir"),
+        ],
         Screen::Live => &[
             ("e", "envs"),
             ("l", "logs"),
@@ -280,29 +288,18 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("q", "salir"),
         ],
         Screen::Logs => &[("r", "recargar"), ("b/esc", "volver"), ("q", "salir")],
-        Screen::Agent if app.agent_busy => &[("m", "audio"), ("q", "salir")],
-        Screen::Agent => &[("l", "logs"), ("enter", "continuar"), ("q", "salir")],
+        Screen::Agent if app.agent_busy => &[("esc", "cancelar"), ("m", "audio"), ("q", "salir")],
+        Screen::Agent => &[
+            ("l", "logs"),
+            ("enter", "continuar"),
+            ("esc", "salir"),
+            ("q", "cerrar"),
+        ],
         Screen::Error => &[("l", "logs"), ("enter", "volver al panel"), ("q", "salir")],
     };
 
-    // En live: un hyperlink OSC 8 clickeable ("→ abrir ↗") cuyo destino es la URL
-    // completa — corto, no se trunca, y el click abre bien aunque la URL sea larga.
-    if app.screen == Screen::Live {
-        if let Some(url) = app.url.clone() {
-            let label = "  → abrir tu app ↗";
-            render_hyperlink(frame.buffer_mut(), area.x, area.y, label, &url);
-            let off = label.chars().count() as u16 + 3;
-            let rest = Rect {
-                x: area.x + off.min(area.width),
-                y: area.y,
-                width: area.width.saturating_sub(off),
-                height: 1,
-            };
-            frame.render_widget(Paragraph::new(Line::from(chip_spans(chips))), rest);
-            return;
-        }
-    }
-
+    // El link "→ abrir tu app ↗" ya vive en el cuerpo de la card (con la URL); no lo
+    // repetimos en el footer. Aquí solo van los chips de teclas.
     let mut spans = vec![Span::raw("  ")];
     spans.extend(chip_spans(chips));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -798,11 +795,28 @@ fn launch(app: &App) -> Vec<Line<'static>> {
     }
     if let Some(url) = &app.url {
         out.push(Line::from(""));
-        out.push(Line::from(shimmer(
-            "● tu app está en vivo",
-            app.tick,
-            Modifier::BOLD,
-        )));
+        if app.public_verified {
+            out.push(Line::from(shimmer(
+                "● tu app está en vivo",
+                app.tick,
+                Modifier::BOLD,
+            )));
+        } else if app.public_checking {
+            out.push(Line::from(Span::styled(
+                "● verificando la URL pública…",
+                Style::default().fg(ACCENT),
+            )));
+        } else {
+            // Honesto: la app corre, pero el navegador no la alcanza (proxy/TLS).
+            out.push(Line::from(Span::styled(
+                "⚠ corre, pero la URL pública no responde aún",
+                Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+            )));
+            out.push(Line::from(Span::styled(
+                "  proxy/TLS de EasyBits · pulsa r para reintentar",
+                Style::default().fg(DIM),
+            )));
+        }
         // Placeholder: el hyperlink OSC 8 clickeable se pinta encima en draw_card
         // (texto corto → no se trunca, el click abre la URL completa).
         out.push(Line::from(""));
@@ -930,13 +944,24 @@ fn agent_screen(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )));
         let cursor = if app.tick % 10 < 5 { "▌" } else { " " };
+        // Si pegaron un bloque .env (multilínea), mostramos un resumen — no el volcado.
+        let shown = if app.agent_input.contains('\n') {
+            let n = app
+                .agent_input
+                .lines()
+                .filter(|l| l.contains('=') && !l.trim_start().starts_with('#'))
+                .count();
+            format!("[{n} variables pegadas]")
+        } else {
+            app.agent_input.clone()
+        };
         out.push(Line::from(vec![
             Span::styled("> ", Style::default().fg(ACCENT)),
-            Span::styled(app.agent_input.clone(), Style::default().fg(TEXT)),
+            Span::styled(shown, Style::default().fg(TEXT)),
             Span::styled(cursor.to_string(), Style::default().fg(ACCENT)),
         ]));
         out.push(Line::from(Span::styled(
-            "enter: enviar  ·  esc: cancelar",
+            "enter: enviar  ·  puedes pegar varias KEY=VALUE  ·  esc: cancelar",
             Style::default().fg(DIM),
         )));
     } else if app.agent_busy {
@@ -1151,6 +1176,7 @@ mod snapshot {
         }
         app.url = Some("https://sb-abc123-3000.sandboxes.easybits.cloud".into());
         app.sandbox_id = Some("sb_abc12345-6789".into());
+        app.public_verified = true; // la URL pública respondió → estado verde normal
         app.screen = Screen::Live;
         // live_at = None → URL totalmente revelada (snapshot determinista).
         insta::assert_snapshot!(render_str(&app, 78, 22));
@@ -1170,6 +1196,7 @@ mod snapshot {
         app.sandbox_id = Some("sb_abc12345-6789".into());
         app.repo_input = "https://github.com/blissito/mi-app.git".into();
         app.live_at = Some(0); // elapsed grande → sin confetti
+        app.public_verified = true; // la URL pública respondió → estado verde normal
         app.screen = Screen::Live;
         insta::assert_snapshot!(render_str(&app, 78, 24));
     }

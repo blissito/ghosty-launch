@@ -64,6 +64,35 @@ pub fn save(app: &str, ovr: &Override) -> bool {
     }
 }
 
+/// Persiste (upsert) en el override durable las envs que el usuario dio al deploy o al
+/// reconfigure. Sin esto, las envs solo viven en el proceso (process-scoped) y el AGENTE
+/// —que lee el override para saber qué hay configurado— queda ciego a ellas y las re-pide.
+/// Solo claves válidas y no vacías; el valor del usuario gana sobre el que hubiera.
+pub fn persist_envs(app: &str, envs: &[(String, String)]) {
+    if envs.is_empty() {
+        return;
+    }
+    let mut ovr = load(app);
+    let mut changed = false;
+    for (k, v) in envs {
+        if !crate::app::is_env_key(k) || v.is_empty() {
+            continue;
+        }
+        if let Some(slot) = ovr.envs.iter_mut().find(|(ek, _)| ek == k) {
+            if slot.1 != *v {
+                slot.1 = v.clone();
+                changed = true;
+            }
+        } else {
+            ovr.envs.push((k.clone(), v.clone()));
+            changed = true;
+        }
+    }
+    if changed {
+        save(app, &ovr);
+    }
+}
+
 /// Fusiona los envs del override sobre `base` (los del .env / pantalla Envs). En
 /// conflicto de clave **gana el override** (es el arreglo deliberado del agente).
 pub fn merge_envs(base: Vec<(String, String)>, ovr: &[(String, String)]) -> Vec<(String, String)> {

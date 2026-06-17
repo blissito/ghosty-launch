@@ -1,7 +1,7 @@
-//! Audio ambiental no invasivo. Un *drone* fantasmal grave mientras Ghosty trabaja
-//! (publicando / agente), y un chime al quedar Live. Sintetizado con `rodio` — sin
-//! archivos. `rodio` es `!Send`, así que el `OutputStream` vive en un thread dedicado
-//! que escucha comandos por canal; el TUI solo manda mensajes.
+//! Bips & blips: micro-sonidos discretos al iniciar/terminar acciones. Antes había un
+//! drone ambiental continuo, pero cansaba; se quitó. Ahora solo efectos cortos
+//! sintetizados con `rodio` — sin archivos. `rodio` es `!Send`, así que el `OutputStream`
+//! vive en un thread dedicado que escucha comandos por canal; el TUI solo manda mensajes.
 //!
 //! Silenciar: `GHOSTY_NO_AUDIO=1` (desactiva todo) o la tecla `m` en runtime.
 
@@ -10,8 +10,9 @@ use std::thread;
 use std::time::Duration;
 
 enum Cmd {
-    Ambient,
-    Stop,
+    Boot,
+    Start,
+    Done,
     Chime,
 }
 
@@ -30,15 +31,19 @@ impl Audio {
         Self { tx: Some(tx) }
     }
 
-    /// Arranca (idempotente) el drone ambiental.
-    pub fn ambient(&self) {
-        self.send(Cmd::Ambient);
+    /// Blip cálido y breve al abrir la app.
+    pub fn boot(&self) {
+        self.send(Cmd::Boot);
     }
-    /// Corta el ambiente.
-    pub fn stop(&self) {
-        self.send(Cmd::Stop);
+    /// "Tu-tip" ascendente: empieza una acción (deploy, agente).
+    pub fn start(&self) {
+        self.send(Cmd::Start);
     }
-    /// Suena el chime de "listo" (al quedar Live).
+    /// "Tip-tu" descendente: una acción terminó (sin quedar Live).
+    pub fn done(&self) {
+        self.send(Cmd::Done);
+    }
+    /// Arpegio "listo 🟢" al quedar Live.
     pub fn chime(&self) {
         self.send(Cmd::Chime);
     }
@@ -58,44 +63,31 @@ fn run_audio(rx: mpsc::Receiver<Cmd>) {
         return;
     };
 
-    let mut ambient: Option<rodio::Sink> = None;
+    // Cada comando es un disparo único (una secuencia corta de notas). No hay nada
+    // continuo que mantener entre comandos, así que ni rastreamos el sink: se detacha
+    // y suena hasta el final por su cuenta.
     while let Ok(cmd) = rx.recv() {
-        match cmd {
-            Cmd::Ambient => {
-                if ambient.is_some() {
-                    continue; // ya sonando
-                }
-                if let Ok(sink) = rodio::Sink::try_new(&handle) {
-                    use rodio::Source;
-                    // Dos graves ligeramente desafinados → beating lento (sensación
-                    // "viva"), + una quinta tenue. Muy bajo: ambiente, no protagonista.
-                    let drone = rodio::source::SineWave::new(98.0)
-                        .mix(rodio::source::SineWave::new(98.6))
-                        .mix(rodio::source::SineWave::new(147.0).amplify(0.5))
-                        .amplify(0.07);
-                    sink.append(drone);
-                    ambient = Some(sink);
-                }
+        // (frecuencia Hz, duración ms) por nota + amplitud de la secuencia.
+        let (notes, amp): (&[(f32, u64)], f32) = match cmd {
+            Cmd::Boot => (&[(660.0, 130)], 0.13),
+            Cmd::Start => (&[(587.33, 70), (880.0, 95)], 0.13),
+            Cmd::Done => (&[(660.0, 70), (440.0, 95)], 0.13),
+            Cmd::Chime => (
+                &[(440.0, 150), (554.37, 150), (659.25, 150), (880.0, 150)],
+                0.18,
+            ),
+        };
+        if let Ok(sink) = rodio::Sink::try_new(&handle) {
+            use rodio::Source;
+            for &(f, ms) in notes {
+                // fade_in corto en cada nota → sin clicks de arranque.
+                let note = rodio::source::SineWave::new(f)
+                    .take_duration(Duration::from_millis(ms))
+                    .fade_in(Duration::from_millis(12))
+                    .amplify(amp);
+                sink.append(note);
             }
-            Cmd::Stop => {
-                if let Some(s) = ambient.take() {
-                    s.stop();
-                }
-            }
-            Cmd::Chime => {
-                if let Ok(sink) = rodio::Sink::try_new(&handle) {
-                    use rodio::Source;
-                    // Arpegio ascendente A mayor — "listo 🟢".
-                    for f in [440.0f32, 554.37, 659.25, 880.0] {
-                        let note = rodio::source::SineWave::new(f)
-                            .take_duration(Duration::from_millis(150))
-                            .fade_in(Duration::from_millis(15))
-                            .amplify(0.18);
-                        sink.append(note);
-                    }
-                    sink.detach(); // suena hasta el final por su cuenta
-                }
-            }
+            sink.detach(); // suena hasta el final por su cuenta
         }
     }
 }

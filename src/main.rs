@@ -52,6 +52,16 @@ async fn main() -> Result<()> {
         return debug::ping_llm().await;
     }
     // Destruye una VM por id (cleanup de pruebas).
+    // Exec crudo en una VM viva (debug). Uso: --exec <sandbox_id> "<cmd>"
+    if let Some(pos) = std::env::args().position(|a| a == "--exec") {
+        let args: Vec<String> = std::env::args().collect();
+        let id = args
+            .get(pos + 1)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("uso: --exec <sandbox_id> \"<cmd>\""))?;
+        let cmd = args.get(pos + 2).cloned().unwrap_or_default();
+        return debug::exec(id, cmd).await;
+    }
     if let Some(pos) = std::env::args().position(|a| a == "--destroy") {
         let id = std::env::args()
             .nth(pos + 1)
@@ -84,6 +94,7 @@ async fn main() -> Result<()> {
 async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     let mut app = App::new();
     let audio = audio::Audio::new();
+    audio.boot();
     let mut prev_screen = app.screen;
     let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -107,20 +118,19 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
         // Auto-arranque: si un deploy falló con VM viva, el agente entra al ruedo solo.
         if let Some((id, err)) = app.agent_pending.take() {
             if let Some(client) = app.client.clone() {
-                agent::spawn_fix_agent(client, id, app.app_name.clone(), err, tx.clone());
+                let cancel = app.agent_cancel.clone().unwrap_or_default();
+                agent::spawn_fix_agent(client, id, app.app_name.clone(), err, cancel, tx.clone());
             }
         }
 
-        // Audio según la pantalla: drone mientras trabaja, chime al quedar Live.
+        // Audio: bips/blips discretos al iniciar/terminar acciones (sin drone continuo).
         if app.screen != prev_screen {
             if !app.muted {
                 match app.screen {
-                    Screen::Launching | Screen::Agent => audio.ambient(),
-                    Screen::Live => {
-                        audio.stop();
-                        audio.chime();
-                    }
-                    _ => audio.stop(),
+                    Screen::Launching | Screen::Agent => audio.start(),
+                    Screen::Live => audio.chime(),
+                    Screen::Error => audio.done(),
+                    _ => {}
                 }
             }
             prev_screen = app.screen;
@@ -160,8 +170,8 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                         }
                         continue;
                     }
-                    // Mute del audio ambiental (m) en pantallas de trabajo — pero no
-                    // cuando el agente espera que teclees un secreto (ahí `m` es texto).
+                    // Mute de los bips/blips (m) en pantallas de trabajo — pero no cuando
+                    // el agente espera que teclees un secreto (ahí `m` es texto).
                     if key.code == KeyCode::Char('m')
                         && matches!(
                             app.screen,
@@ -170,14 +180,9 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                         && app.agent_prompt.is_none()
                     {
                         app.muted = !app.muted;
-                        if app.muted {
-                            audio.stop();
-                        } else if matches!(app.screen, Screen::Launching | Screen::Agent) {
-                            audio.ambient();
-                        }
                         continue;
                     }
-                    handle_key(&mut app, key.code, &tx);
+                    handle_key(&mut app, key.code, &tx, &audio);
                 }
                 // Pegado de la llave: el terminal lo manda como un evento Paste
                 // (no como teclas), evitando el aviso de "bracketed paste".
@@ -220,8 +225,10 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                 Event::Paste(text)
                     if app.screen == Screen::Agent && app.agent_prompt.is_some() =>
                 {
-                    let clean: String =
-                        text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                    // PRESERVAMOS los newlines: el usuario puede pegar un .env entero
+                    // (varias KEY=VALUE) y el agente lo parsea todo. Solo normalizamos
+                    // CRLF→LF para que el separador de pares sea consistente.
+                    let clean = text.replace("\r\n", "\n").replace('\r', "\n");
                     app.agent_input.push_str(clean.trim());
                 }
                 _ => {}
@@ -243,7 +250,12 @@ fn submit_key(app: &mut App, tx: &mpsc::UnboundedSender<app::Msg>) {
     spawn_finish(key, tx.clone());
 }
 
-fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>) {
+fn handle_key(
+    app: &mut App,
+    code: KeyCode,
+    tx: &mpsc::UnboundedSender<app::Msg>,
+    audio: &audio::Audio,
+) {
     match app.screen {
         Screen::KeyEntry => {
             // Reconexión/OAuth en curso: solo Esc cancela.
@@ -294,6 +306,9 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 if matches!(code, KeyCode::Char('s' | 'S' | 'y' | 'Y')) && n > 0 {
                     let id = app.apps[app.apps_cursor].id.clone();
                     if let Some(client) = app.client.clone() {
+                        if !app.muted {
+                            audio.done();
+                        }
                         app.busy = Some("borrando…".into());
                         spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
                     }
@@ -479,6 +494,9 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                 app.confirm_destroy = false;
                 if matches!(code, KeyCode::Char('s' | 'S' | 'y' | 'Y')) {
                     if let (Some(client), Some(id)) = (app.client.clone(), app.sandbox_id.clone()) {
+                        if !app.muted {
+                            audio.done();
+                        }
                         app.busy = Some("borrando…".into());
                         app.screen = Screen::Apps; // el indicador se ve en el panel
                         spawn_destroy_and_reload(client, id, app.email.clone(), tx.clone());
@@ -502,6 +520,16 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                     }
                 }
                 KeyCode::Char('d') => app.confirm_destroy = true,
+                // Reintentar la verificación de la URL pública (cuando no respondió aún).
+                KeyCode::Char('r') | KeyCode::Char('R') if !app.public_verified => {
+                    if let Some(url) = app.url.clone() {
+                        app.public_checking = true;
+                        let tx2 = tx.clone();
+                        tokio::spawn(async move {
+                            app::finalize_live(url, &tx2).await;
+                        });
+                    }
+                }
                 // Reconfigurar envs y reiniciar (en la misma VM).
                 KeyCode::Char('e') | KeyCode::Char('E') => {
                     if let Some(id) = app.sandbox_id.clone() {
@@ -558,6 +586,17 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
             }
         },
         Screen::Agent => {
+            // `Esc` SIEMPRE aborta el agente —esté pensando o pidiéndote un dato— y te
+            // suelta al panel. Es la salida garantizada: nunca quedas atrapado.
+            if code == KeyCode::Esc {
+                app.cancel_agent();
+                app.screen = Screen::Apps;
+                if let Some(client) = app.client.clone() {
+                    app.busy = Some("actualizando…".into());
+                    spawn_list_apps(client, app.email.clone(), tx.clone());
+                }
+                return;
+            }
             // El agente está esperando que teclees un valor (un secreto) → input inline.
             if app.agent_prompt.is_some() {
                 match code {
@@ -568,14 +607,6 @@ fn handle_key(app: &mut App, code: KeyCode, tx: &mpsc::UnboundedSender<app::Msg>
                         }
                         if let Some(reply) = app.agent_reply.take() {
                             let _ = reply.send(app.agent_input.trim().to_string());
-                        }
-                        app.agent_prompt = None;
-                        app.agent_input.clear();
-                    }
-                    KeyCode::Esc => {
-                        // Cancela: manda vacío → el agente lo trata como "no provisto".
-                        if let Some(reply) = app.agent_reply.take() {
-                            let _ = reply.send(String::new());
                         }
                         app.agent_prompt = None;
                         app.agent_input.clear();

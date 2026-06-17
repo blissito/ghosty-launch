@@ -2,6 +2,8 @@
 
 use crate::easybits::Client;
 use crate::oauth::{self, Creds};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Repo de referencia a desplegar. Override con GHOSTY_REF_REPO.
@@ -277,6 +279,11 @@ pub enum Msg {
     Live {
         url: String,
     },
+    /// La app corre y se expuso, pero la URL PÚBLICA no respondió (TLS/proxy de EasyBits,
+    /// propagación). No es un fallo de la app — estado honesto, no verde falso.
+    LiveUnverified {
+        url: String,
+    },
     Failed {
         error: String,
     },
@@ -375,8 +382,15 @@ pub struct App {
     pub agent_input: String,
     /// Canal de vuelta hacia la tarea del agente con el valor tecleado.
     pub agent_reply: Option<tokio::sync::oneshot::Sender<String>>,
-    /// Audio ambiental silenciado (tecla `m`).
+    /// Bandera de cancelación: `Esc` la prende y el loop del agente la chequea entre
+    /// pasos para abortar. Compartida con la tarea async (de ahí el `Arc<AtomicBool>`).
+    pub agent_cancel: Option<Arc<AtomicBool>>,
+    /// Audio silenciado (tecla `m`).
     pub muted: bool,
+    /// ¿La URL pública respondió de verdad? Falso = corre pero el proxy/TLS no sirve aún.
+    pub public_verified: bool,
+    /// Reintento de verificación pública en curso (tecla `r` en Live no verificado).
+    pub public_checking: bool,
     pub should_quit: bool,
 }
 
@@ -424,7 +438,10 @@ impl App {
             agent_prompt: None,
             agent_input: String::new(),
             agent_reply: None,
+            agent_cancel: None,
             muted: false,
+            public_verified: false,
+            public_checking: false,
             should_quit: false,
         }
     }
@@ -670,6 +687,22 @@ impl App {
             Msg::Live { url } => {
                 self.url = Some(url);
                 self.live_at = Some(self.tick); // publicación fresca → confetti
+                self.public_verified = true;
+                self.public_checking = false;
+                // Si llegamos vía el agente, los pasos del deploy pueden haber quedado
+                // congelados en un fallo (health check impaciente). Ya está en vivo →
+                // normaliza la barra a 100% para no mostrar el cadáver del deploy.
+                self.complete_steps();
+                self.screen = Screen::Live;
+            }
+            Msg::LiveUnverified { url } => {
+                // Corre, pero la URL pública no respondió. Honesto: sin confetti, con
+                // aviso + reintento. No mandamos al agente (no es un fallo de la app).
+                self.url = Some(url);
+                self.live_at = None;
+                self.public_verified = false;
+                self.public_checking = false;
+                self.complete_steps();
                 self.screen = Screen::Live;
             }
             Msg::Failed { error } => {
@@ -697,6 +730,16 @@ impl App {
                 self.agent_steps.push(text);
             }
             Msg::AgentDone { outcome } => {
+                // Si el usuario ya canceló (Esc), ignoramos el outcome tardío: la UI ya
+                // se soltó al panel y no queremos reabrir la pantalla del agente.
+                let cancelled = self
+                    .agent_cancel
+                    .as_ref()
+                    .is_some_and(|f| f.load(Ordering::Relaxed));
+                self.agent_cancel = None;
+                if cancelled {
+                    return;
+                }
                 self.agent_busy = false;
                 self.agent_prompt = None;
                 self.agent_reply = None;
@@ -710,6 +753,14 @@ impl App {
         }
     }
 
+    /// Marca todos los pasos del deploy como completados (la app quedó en vivo, posible-
+    /// mente vía el agente). Evita mostrar un paso fallido + barra a medias en Live.
+    pub fn complete_steps(&mut self) {
+        for s in &mut self.steps {
+            s.status = StepStatus::Done;
+        }
+    }
+
     /// Arranca el agente de arreglo sobre la VM del deploy fallido (tecla `a` en Error).
     pub fn start_fix_agent(&mut self) {
         self.agent_steps.clear();
@@ -717,9 +768,28 @@ impl App {
         self.agent_prompt = None;
         self.agent_input.clear();
         self.agent_reply = None;
+        self.agent_cancel = Some(Arc::new(AtomicBool::new(false)));
         self.agent_busy = true;
         self.eyes = ("◉", "◉"); // ojos en trance: el agente está en el ruedo
         self.screen = Screen::Agent;
+    }
+
+    /// `Esc` durante el agente: aborta SIEMPRE, sin importar el estado. Prende la
+    /// bandera (el loop la ve entre pasos), desbloquea un `need_secret` pendiente
+    /// mandándole vacío, y suelta la UI de vuelta al panel de inmediato — el usuario
+    /// nunca queda atrapado esperando a que el loop reaccione.
+    pub fn cancel_agent(&mut self) {
+        if let Some(flag) = &self.agent_cancel {
+            flag.store(true, Ordering::Relaxed);
+        }
+        if let Some(reply) = self.agent_reply.take() {
+            let _ = reply.send(String::new());
+        }
+        self.agent_busy = false;
+        self.agent_prompt = None;
+        self.agent_input.clear();
+        self.agent_outcome = None;
+        self.eyes = ("•", "•");
     }
 
     pub fn start_launch(&mut self) {
@@ -1346,6 +1416,9 @@ pub fn spawn_launch(
         // Receta del contrato (ghosty.toml) o auto-detect.
         // Auto-install: SIN --omit=dev — el build (vite/RRv7) necesita devDeps como
         // @react-router/dev. Tras el build podamos devDeps para liberar disco.
+        // Las envs que dio el usuario al deploy se PERSISTEN en el override durable, para
+        // que el agente las vea como ya configuradas (y no las re-pida si el deploy falla).
+        crate::recipe::persist_envs(&app_name, &envs);
         // Override local del agente (arreglo durable) gana sobre el ghosty.toml del repo.
         let ovr = crate::recipe::load(&app_name);
         let install_recipe = ovr.install.clone().or_else(|| manifest.deploy.install.clone());
@@ -1524,12 +1597,13 @@ pub fn spawn_launch(
         });
         match client.expose(&id, APP_PORT).await {
             Ok(exp) => {
+                // No cantamos victoria con el loopback: probamos la URL pública de verdad.
                 let _ = tx.send(Msg::Step {
                     idx: 3,
-                    status: StepStatus::Done,
-                    detail: exp.url.clone(),
+                    status: StepStatus::Running,
+                    detail: "verificando la URL pública…".to_string(),
                 });
-                let _ = tx.send(Msg::Live { url: exp.url });
+                finalize_live(exp.url, &tx).await;
             }
             Err(e) => {
                 let _ = tx.send(Msg::Step {
@@ -1579,6 +1653,41 @@ pub(crate) async fn health_check(client: &Client, id: &str) -> bool {
     matches!(exec_oneshot(client, id, &cmd, 30).await, Some(st) if st.exit_code == Some(0))
 }
 
+/// ¿La URL PÚBLICA responde de verdad? Esto valida lo que ve el navegador del usuario
+/// (handshake TLS del edge + HTTP <500), NO el loopback interno. Sin esto, launch canta
+/// "🟢 en vivo" aunque el proxy/TLS de EasyBits no sirva la URL. Reintenta para dar
+/// margen a la propagación del proxy/certificado.
+pub(crate) async fn public_ok(url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    else {
+        return false;
+    };
+    for attempt in 0..5 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        if let Ok(resp) = client.get(url).send().await {
+            if resp.status().as_u16() < 500 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Cierra el deploy con honestidad: prueba la URL pública y manda `Live` solo si responde
+/// de verdad; si no, `LiveUnverified` (corre, pero la URL no sirve aún). Lo usan las tres
+/// rutas que dejan una app en vivo (deploy, reconfigure, agente).
+pub(crate) async fn finalize_live(url: String, tx: &UnboundedSender<Msg>) {
+    if public_ok(&url).await {
+        let _ = tx.send(Msg::Live { url });
+    } else {
+        let _ = tx.send(Msg::LiveUnverified { url });
+    }
+}
+
 /// Trae las últimas líneas de `/tmp/app.log` de la VM (stdout/stderr de la app).
 pub(crate) async fn fetch_app_log(client: &Client, id: &str) -> String {
     match exec_oneshot(client, id, "tail -n 200 /tmp/app.log 2>/dev/null", 15).await {
@@ -1613,6 +1722,9 @@ pub fn spawn_reconfigure(
     envs: Vec<(String, String)>,
 ) {
     tokio::spawn(async move {
+        // Persistimos las envs en el override durable (igual que el deploy): el agente
+        // las verá como ya configuradas y no las re-pedirá.
+        crate::recipe::persist_envs(&app_name, &envs);
         // Paso 0 — detener el proceso viejo + re-arrancar con las nuevas envs.
         let _ = tx.send(Msg::Step {
             idx: 0,
@@ -1707,10 +1819,9 @@ pub fn spawn_reconfigure(
             status: StepStatus::Done,
             detail: "responde 🟢".to_string(),
         });
-        // La VM ya tenía el puerto expuesto → reusamos la misma URL pública.
-        let _ = tx.send(Msg::Live {
-            url: public_url(&id, APP_PORT),
-        });
+        // La VM ya tenía el puerto expuesto → reusamos la misma URL pública, pero la
+        // verificamos de verdad antes de cantar verde.
+        finalize_live(public_url(&id, APP_PORT), &tx).await;
     });
 }
 

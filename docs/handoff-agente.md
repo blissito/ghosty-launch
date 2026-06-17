@@ -1,70 +1,68 @@
-# Handoff — Agente de errores (estado 2026-06-16, retomar mañana)
+# Handoff — Agente de errores (estado 2026-06-16, sesión 2)
 
-## El veredicto del día (de blissito)
+## Resumen de la sesión
 
-Vamos parchando bug tras bug en la UX del agente. **"Improvisar el loop será un problema"** —
-y es correcto. El loop agéntico hand-rolled (`src/agent.rs`) tiene demasiados estados frágiles
-(se queda pidiendo lo mismo, no deja avanzar, no hay escape). Mañana: **rediseñar el loop/UX
-con principios, no más parches puntuales.**
+Se rediseñó el loop del agente (de "improvisado y frágil" a robusto) y se cerró el
+círculo de honestidad del deploy. Veredicto del spike confirmado: **el loop de ghostycode
+NO es portable** (soldado al TUI); lo valioso ya está vendorizado en `loop-engine`. Así que
+endurecimos NUESTRO loop (Opción A), no migramos.
 
-Síntoma reportado hoy: *"me dice el problema y ya no me deja avanzar ni hacer nada"* — el agente
-diagnostica pero el usuario queda **atascado** en la pantalla del Agente.
+## Lo que se arregló hoy (todo en `main`, compila, 16 tests verdes)
 
-## Qué SÍ funciona (probado, en `main`)
+### Loop del agente (`src/agent.rs`, `src/app.rs`, `src/main.rs`)
+- **`Esc` cancela SIEMPRE.** `App.agent_cancel: Arc<AtomicBool>` que el loop chequea entre
+  pasos; `App::cancel_agent()` desbloquea un `need_secret` pendiente y suelta la UI al panel
+  al instante. `spawn_fix_agent` respeta la cancelación (no publica Live por accidente).
+- **Anti-bucle.** Mapa `asked: HashMap<String,bool>` (provista/declinada). `need_secret` no
+  re-pide lo ya resuelto; si insiste, le dice "ya la tienes, sospecha del valor / termina".
+- **Awareness de envs.** El agente siembra `asked` + el contexto inicial desde el override
+  durable → ve lo ya configurado y no lo re-pide.
+- **Pegar `.env` entero.** `need_secret` parsea un bloque multilínea `KEY=VALUE` (soporta
+  `export`, comillas; distingue KEY válida de un valor base64 con `=`) y guarda TODAS las
+  vars de una. El paste ya no borra newlines; el input muestra `[N variables pegadas]`.
+- **`restart` robusto.** Antes `pkill -f node; sleep 1` dejaba el :3000 ocupado → "sigue
+  500". Ahora mata por patrón + por `PORT` en environ con `-9` y ESPERA a que el puerto
+  quede libre (LISTEN `0BB8`/`0A` en `/proc/net/tcp`) antes de relanzar.
 
-- **Motor** (`crates/loop-engine`): inferencia DeepSeek v4-pro **vía EasyBits** (`/api/v2/llm/v1`,
-  mismo bearer, sin key extra), con reasoning. 177 tests verdes. Sólido.
-- **Auth**: `oauth::fresh_bearer()` refresca + **persiste** el token (el endpoint LLM rechaza
-  tokens rancios). Arreglado.
-- **Inyección de envs**: PROBADA — deploy de `agenda` con `DATABASE_URL` dummy → 🟢 Live. Las
-  envs SÍ llegan a la app. (agenda solo necesita que `DATABASE_URL` *exista* para bootear.)
-- **Receta durable** (`src/recipe.rs`): override local que el deploy fusiona sobre el repo.
-- **Narrativa** del agente (habla en español, no comandos crudos) + **outcome card**.
-- **Paste** en el prompt inline del secreto + Enter ignora vacío + Ctrl+U/W. Arreglado.
-- **Audio** ambiental (drone + chime, tecla `m`, `GHOSTY_NO_AUDIO`).
+### Honestidad del deploy ("dice que está en vivo y no lo está")
+- **Verificación de URL pública real.** `app::public_ok(url)` hace GET HTTPS a la URL
+  pública (rustls, 5 reintentos × 3s) — valida lo que ve el navegador, no el loopback.
+  `app::finalize_live()` reemplaza los 3 puntos que cantaban Live (deploy, reconfigure,
+  agente): manda `Msg::Live` solo si responde de verdad, si no `Msg::LiveUnverified`.
+- **Estado honesto** en Live cuando no verifica: aviso amarillo *"corre, pero la URL pública
+  no responde aún · proxy/TLS de EasyBits · pulsa r para reintentar"*, sin confetti, sin
+  mandar al agente. Tecla `r` reintenta.
+- **Pasos normalizados al llegar a Live** (`App::complete_steps()`): si el agente recuperó
+  el deploy, los pasos congelados en un fallo ya no muestran "✗ … 50%" en la pantalla Live.
 
-## El problema central a resolver mañana: el loop/UX se atasca
+### Envs del deploy → override durable (`src/recipe.rs`, `src/app.rs`)
+- **`recipe::persist_envs()`**: las envs que el usuario da al deploy/reconfigure se
+  persisten (upsert) en el override durable. Antes solo vivían en el proceso → el agente
+  quedaba ciego a ellas y las re-pedía. Ahora el deploy y el reconfigure las guardan donde
+  el agente las ve. ESTE era el bug de raíz del "le doy todo pero me lo pide al reparar".
 
-Hipótesis (verificar con repro fresco + screenshot):
+### Audio (`src/audio.rs`, `src/main.rs`)
+- Fuera el drone ambiental continuo (cansaba). Ahora bips/blips discretos: `boot` al abrir,
+  `start` al iniciar acción, `done` al terminar/borrar, `chime` (el favorito) al quedar Live
+  de verdad. Tecla `m` silencia. Cada uno con fade-in (sin clicks).
 
-1. **No hay escape del agente.** En `Screen::Agent`, mientras `agent_busy` o `agent_prompt`,
-   solo `q` (que cierra TODA la app) responde. Si el agente loopea/cuelga, el usuario queda
-   atrapado. → **Falta: `Esc` cancela el agente en cualquier momento → vuelve a Error/Apps.**
-   (Requiere poder abortar la tarea del agente: un `CancellationToken`/flag que el loop chequee.)
-2. **Re-pregunta en bucle.** Si el usuario da `DATABASE_URL` pero la app sigue fallando (valor
-   inválido, Mongo inalcanzable que SÍ bloquea, u otra causa), el agente vuelve a pedir lo mismo
-   → sensación de "mismo problema". → El loop necesita: detectar que ya pidió X, no repetir;
-   terminar con un estado claro tras N intentos.
-3. **El agente no sabe qué envs YA configuró el usuario.** Diagnostica "falta DATABASE_URL"
-   corriendo `env` en un shell nuevo, pero las envs inyectadas son **process-scoped** (solo en el
-   proceso de la app, no en un shell nuevo). → Pasarle al agente la **lista de env keys ya
-   configuradas** (de `spawn_launch`/override) para que distinga "falta" de "está pero el valor
-   es malo".
+### Debug
+- **`--exec <sandbox_id> "<cmd>"`**: exec crudo en una VM viva. Con él diagnosticamos el
+  fallo de la URL pública capa por capa.
 
-## Decisión estratégica para mañana
+## El hallazgo grande: el TLS del proxy de EasyBits
 
-**¿Seguir con el loop hand-rolled (endurecido) o cambiar de enfoque?**
+Diagnóstico confirmado en una VM viva: la app está sana (escucha `0.0.0.0:3000`, responde
+200 incluso con el Host público), DNS resuelve, **pero el handshake TLS al dominio público
+falla** (`curl (35): tlsv1 alert internal error`). El edge de EasyBits no sirve el cert para
+`*-3000.sandboxes.easybits.cloud`. **Es lado-plataforma (EasyBits es de blissito), no de
+launch.** Launch ahora lo reporta con honestidad (aviso amarillo) en vez de verde falso.
 
-- **Opción A — Endurecer el loop actual**: agregar (a) escape/cancel siempre disponible, (b)
-  guardas anti-bucle (no re-pedir, límite de intentos, estados terminales claros), (c) awareness
-  de envs ya configuradas, (d) timeouts. Es seguir en `src/agent.rs` pero con un diseño de
-  máquina de estados explícita, no improvisado.
-- **Opción B — Reconsiderar el enfoque**: ¿vale más constreñir el agente (menos autonomía, más
-  determinismo) o apoyarse más en el loop probado de ghostycode? blissito sospecha que improvisar
-  es frágil — evaluar si un loop más principista/constreñido evita este whack-a-mole.
+## Pendientes / follow-ups
 
-Recomendación de arranque: empezar por el **escape garantizado** (bug #1, el más doloroso:
-"no me deja avanzar"), luego decidir A vs B con un repro claro en mano.
-
-## Primer paso concreto mañana
-
-1. Repro con screenshot del estado "atascado" exacto (¿busy infinito? ¿pidiendo en bucle?
-   ¿outcome sin acción?).
-2. Implementar `Esc` = cancelar agente desde cualquier estado de `Screen::Agent`.
-3. Con eso, decidir A (endurecer) vs B (reconsiderar enfoque).
-
-## Archivos clave
-- `src/agent.rs` — el loop + tools + dispatch (lo que hay que rediseñar).
-- `src/main.rs` — `Screen::Agent` key handling (input inline, falta el escape).
-- `src/app.rs` — estado del agente (`agent_busy/prompt/reply/outcome/pending`).
-- `src/ui.rs` — `agent_screen()` render.
+1. **EasyBits TLS** (plataforma): por qué el edge no aprovisiona el cert de los hosts con
+   `-<port>`. Es lo que rompe la URL pública en las pruebas.
+2. **Paciencia del health check del deploy.** Apps que bootean lento (mailmask: SNS, AWS)
+   exceden la ventana (~40-60s) → el deploy marca "no respondió" y dispara al agente sin
+   necesidad. Considerar subir el presupuesto o hacerlo adaptativo. (El agente recupera, pero
+   es un rodeo evitable.)

@@ -14,6 +14,9 @@ use loop_engine::config::{ApiProvider, Config};
 use loop_engine::llm_client::LlmClient;
 use loop_engine::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::app::Msg;
@@ -53,6 +56,38 @@ fn clip(s: &str, max: usize) -> String {
     format!("{head}\n…[recortado]…\n{tail}")
 }
 
+/// Parsea un bloque pegado tipo `.env`: una o varias líneas `KEY=VALUE` (soporta
+/// `export KEY=…` y comillas envolventes). Devuelve SOLO los pares cuya KEY sea válida,
+/// así un valor crudo con `=` (p. ej. base64 `abc/d+e=`) NO se confunde con un par.
+/// Vacío = el input no es un bloque KEY=VALUE → es un valor suelto.
+fn parse_env_pairs(input: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        if let Some((k, v)) = line.split_once('=') {
+            let k = k.trim();
+            if crate::app::is_env_key(k) {
+                let v = v.trim();
+                // Quita UN par de comillas envolventes iguales, si las hay.
+                let v = if v.len() >= 2
+                    && ((v.starts_with('"') && v.ends_with('"'))
+                        || (v.starts_with('\'') && v.ends_with('\'')))
+                {
+                    &v[1..v.len() - 1]
+                } else {
+                    v
+                };
+                out.push((k.to_string(), v.to_string()));
+            }
+        }
+    }
+    out
+}
+
 const SYSTEM: &str = "\
 Eres el agente de Ghosty Launch. Una app acaba de fallar su deploy en una micro-VM y tú \
 entras al ruedo a arreglarla. El proceso arrancó pero no responde en el puerto (PORT=3000). \
@@ -83,10 +118,17 @@ pub fn spawn_fix_agent(
     sandbox_id: String,
     app_name: String,
     fail_error: String,
+    cancel: Arc<AtomicBool>,
     tx: UnboundedSender<Msg>,
 ) {
     tokio::spawn(async move {
-        let outcome = run(&client, &sandbox_id, &app_name, &fail_error, &tx).await;
+        let outcome = run(&client, &sandbox_id, &app_name, &fail_error, &cancel, &tx).await;
+        // Si el usuario canceló (Esc), la UI ya se soltó al panel: no publiques nada,
+        // solo manda el AgentDone (que la app ignora y usa para limpiar la bandera).
+        if cancel.load(Ordering::Relaxed) {
+            let _ = tx.send(Msg::AgentDone { outcome });
+            return;
+        }
         // Si el agente dice que aplicó un arreglo, cerramos el loop nosotros:
         // re-verificamos el health y, si responde, exponemos el puerto → Live.
         if let Outcome::Applied { .. } = &outcome {
@@ -94,8 +136,9 @@ pub fn spawn_fix_agent(
             if crate::app::health_check(&client, &sandbox_id).await {
                 match client.expose(&sandbox_id, crate::app::APP_PORT).await {
                     Ok(exp) => {
-                        step(&tx, "🟢 responde — publicando");
-                        let _ = tx.send(Msg::Live { url: exp.url });
+                        step(&tx, "🟢 responde local — verificando la URL pública…");
+                        // Verifica la URL pública de verdad antes de cantar verde.
+                        crate::app::finalize_live(exp.url, &tx).await;
                         return;
                     }
                     Err(e) => step(&tx, &format!("responde pero no se pudo exponer: {e}")),
@@ -113,6 +156,7 @@ async fn run(
     id: &str,
     app_name: &str,
     fail_error: &str,
+    cancel: &Arc<AtomicBool>,
     tx: &UnboundedSender<Msg>,
 ) -> Outcome {
     // Inferencia vía EasyBits, endpoint /api/v2/llm/v1. Usamos un bearer FRESCO (el del
@@ -141,13 +185,41 @@ async fn run(
     let log = crate::app::fetch_app_log(client, id).await;
     let log_tail = clip(&log, TOOL_OUT_MAX);
 
+    // Envs que YA están configuradas (durables, inyectadas al proceso de la app). El
+    // agente debe saberlas: un `env` en un shell nuevo no las ve (son process-scoped),
+    // así que sin esto re-diagnostica "falta X" y re-pide lo que ya tiene. Sembramos
+    // `asked` con ellas → si intenta need_secret de una, le decimos que ya la tiene.
+    let configured: Vec<String> = recipe::load(app_name)
+        .envs
+        .iter()
+        .map(|(k, _)| k.clone())
+        .collect();
+    let mut asked: HashMap<String, bool> = configured.iter().map(|k| (k.clone(), true)).collect();
+    let envs_note = if configured.is_empty() {
+        "No hay envs configuradas aún.".to_string()
+    } else {
+        format!(
+            "Envs YA configuradas (durables, ya inyectadas al proceso — NO las pidas de nuevo): \
+             {}. Si una de estas existe pero la app falla, sospecha del VALOR (inválido) o de \
+             otra causa, no de que 'falte'.",
+            configured.join(", ")
+        )
+    };
+
     let mut messages = vec![user_text(format!(
         "El deploy falló así:\n{fail_error}\n\nÚltimas líneas de /tmp/app.log:\n{log_tail}\n\n\
+         {envs_note}\n\n\
          Diagnostica y arregla. La app debe responder en 127.0.0.1:3000."
     ))];
     let tools = tools();
 
     for _ in 0..MAX_STEPS {
+        // Salida garantizada: si el usuario pulsó Esc, abortamos entre pasos.
+        if cancel.load(Ordering::Relaxed) {
+            return Outcome::GaveUp {
+                summary: "Cancelado por el usuario.".into(),
+            };
+        }
         let req = MessageRequest {
             model: model.clone(),
             messages: messages.clone(),
@@ -215,7 +287,8 @@ async fn run(
                 return finish_outcome(&input);
             }
             step(tx, &tool_label(&name, &input));
-            let (content, is_error) = dispatch(client, id, app_name, &name, &input, tx).await;
+            let (content, is_error) =
+                dispatch(client, id, app_name, &name, &input, &mut asked, tx).await;
             results.push(ContentBlock::ToolResult {
                 tool_use_id: call_id,
                 content,
@@ -241,6 +314,7 @@ async fn dispatch(
     app_name: &str,
     name: &str,
     input: &Value,
+    asked: &mut HashMap<String, bool>,
     tx: &UnboundedSender<Msg>,
 ) -> (String, bool) {
     match name {
@@ -249,6 +323,31 @@ async fn dispatch(
             let why = input["reason"].as_str().unwrap_or("");
             if !crate::app::is_env_key(key) {
                 return (format!("clave inválida: {key:?}"), true);
+            }
+            // Anti-bucle: no re-pedir lo que ya resolvimos en este run (ni lo que ya
+            // estaba configurado). Sin esto, el agente cae en "pide → falla → re-pide".
+            match asked.get(key) {
+                Some(true) => {
+                    return (
+                        format!(
+                            "Ya tienes {key}: está configurada y guardada como env durable. NO \
+                             la vuelvas a pedir. Si la app sigue fallando con {key} presente, el \
+                             VALOR puede ser inválido o la causa es otra — investiga con \
+                             run_in_vm o termina con finish."
+                        ),
+                        false,
+                    );
+                }
+                Some(false) => {
+                    return (
+                        format!(
+                            "El usuario ya declinó dar {key}; no la pidas otra vez. Si no puedes \
+                             continuar sin ella, usa finish con needs_envs=[\"{key}\"]."
+                        ),
+                        true,
+                    );
+                }
+                None => {}
             }
             // Pide el valor al usuario INLINE y espera su respuesta (back-channel).
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -260,14 +359,41 @@ async fn dispatch(
             let _ = tx.send(Msg::AgentNeedInput { prompt, reply: reply_tx });
             match reply_rx.await {
                 Ok(v) if !v.trim().is_empty() => {
-                    // Lo guardamos durable de una vez (el agente luego hace restart).
+                    // El usuario puede pegar un BLOQUE .env entero (varias KEY=VALUE), no
+                    // solo el valor pedido — así no lo hacemos pedir uno por uno.
+                    let pairs = parse_env_pairs(&v);
                     let mut ovr = recipe::load(app_name);
-                    ovr.envs.retain(|(k, _)| k != key);
-                    ovr.envs.push((key.to_string(), v.trim().to_string()));
-                    let _ = recipe::save(app_name, &ovr);
-                    (format!("el usuario proveyó {key}; ya quedó guardado como env durable"), false)
+                    if pairs.is_empty() {
+                        // Valor suelto para la clave pedida.
+                        ovr.envs.retain(|(k, _)| k != key);
+                        ovr.envs.push((key.to_string(), v.trim().to_string()));
+                        let _ = recipe::save(app_name, &ovr);
+                        asked.insert(key.to_string(), true);
+                        (format!("el usuario proveyó {key}; ya quedó guardado como env durable"), false)
+                    } else {
+                        // Bloque .env: guarda TODOS los pares de una.
+                        for (k, val) in &pairs {
+                            ovr.envs.retain(|(ek, _)| ek != k);
+                            ovr.envs.push((k.clone(), val.clone()));
+                            asked.insert(k.clone(), true);
+                        }
+                        let _ = recipe::save(app_name, &ovr);
+                        let names: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+                        (
+                            format!(
+                                "el usuario pegó {} variables ({}); TODAS guardadas como envs \
+                                 durables. NO vuelvas a pedir ninguna de ellas — reinicia y verifica.",
+                                pairs.len(),
+                                names.join(", ")
+                            ),
+                            false,
+                        )
+                    }
                 }
-                _ => (format!("el usuario no proveyó {key}"), true),
+                _ => {
+                    asked.insert(key.to_string(), false);
+                    (format!("el usuario no proveyó {key}"), true)
+                }
             }
         }
         "run_in_vm" => {
@@ -297,6 +423,7 @@ async fn dispatch(
             ovr.envs.retain(|(k, _)| k != key);
             ovr.envs.push((key.to_string(), val.to_string()));
             if recipe::save(app_name, &ovr) {
+                asked.insert(key.to_string(), true);
                 (format!("env {key} guardado (durable)"), false)
             } else {
                 ("no se pudo guardar el override".into(), true)
@@ -343,10 +470,17 @@ fn restart_command(ovr: &recipe::Override) -> String {
         .map(|(k, v)| format!("{k}={} ", crate::app::sh_squote(v)))
         .collect();
     let start = ovr.start.clone().unwrap_or_else(|| "npm start".into());
+    // Mata el proceso viejo de forma robusta y ESPERA a que el :3000 quede libre antes de
+    // relanzar — si no, el nuevo proceso choca con el puerto ocupado y la app no rebindea
+    // (el clásico "sigue 500"). Kill por patrón + por PORT en environ; espera = LISTEN
+    // (estado 0A) sobre el puerto 3000 (=0BB8 hex) en /proc/net/tcp.
     format!(
         "for d in /app/src /app; do [ -f \"$d/package.json\" ] && WD=\"$d\" && break; done; \
          [ -z \"$WD\" ] && {{ echo NO_APP; exit 1; }}; cd \"$WD\"; \
-         pkill -f node 2>/dev/null; sleep 1; rm -f /tmp/app.log; \
+         pkill -9 -f node 2>/dev/null; \
+         for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do grep -qa 'PORT=3000' /proc/$pid/environ 2>/dev/null && [ \"$pid\" != \"$$\" ] && kill -9 $pid 2>/dev/null; done; \
+         i=0; while [ $i -lt 10 ]; do grep -qE ':0BB8 [0-9A-F]+:[0-9A-F]+ 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null || break; pkill -9 -f node 2>/dev/null; sleep 1; i=$((i+1)); done; \
+         rm -f /tmp/app.log; \
          ({envs}PORT=3000 setsid nohup {start} > /tmp/app.log 2>&1 &); sleep 3; echo RESTARTED"
     )
 }
