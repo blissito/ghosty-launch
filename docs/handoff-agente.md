@@ -66,3 +66,11 @@ launch.** Launch ahora lo reporta con honestidad (aviso amarillo) en vez de verd
    exceden la ventana (~40-60s) → el deploy marca "no respondió" y dispara al agente sin
    necesidad. Considerar subir el presupuesto o hacerlo adaptativo. (El agente recupera, pero
    es un rodeo evitable.)
+
+## Retomar mañana — empezar por aquí
+
+Recomendación: arrancar por el **#2 (paciencia del health check)** — es 100% de launch, de
+bajo riesgo y elimina el rodeo innecesario por el agente en apps lentas (`health_check` en
+`src/app.rs`, sube/adapta el presupuesto de ~40-60s). El **#1 (TLS de EasyBits)** es lado
+plataforma y conviene atacarlo con acceso al proxy/cert. Todo lo de esta sesión está en
+`main` (commit `a53d235`), compila y con 16 tests verdes — no hay nada a medias que cerrar.
