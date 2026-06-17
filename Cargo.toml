@@ -26,6 +26,7 @@ base64 = "0.22"
 getrandom = "0.2"
 urlencoding = "2"
 loop-engine = { path = "crates/loop-engine" }
+rodio = "0.19"
 
 [dev-dependencies]
 insta = "1"

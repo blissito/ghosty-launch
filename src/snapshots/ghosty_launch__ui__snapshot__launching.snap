@@ -1,6 +1,6 @@
 ---
 source: src/ui.rs
-assertion_line: 1001
+assertion_line: 1142
 expression: "render_str(&app, 78, 20)"
 ---
 
@@ -22,4 +22,4 @@ expression: "render_str(&app, 78, 20)"
            ╰──────────────────────────────────────────────────────╯
 
 
-   esc cancelar
+   m audio    esc cancelar

@@ -3,6 +3,7 @@
 
 mod agent;
 mod app;
+mod audio;
 mod debug;
 mod easybits;
 mod oauth;
@@ -82,6 +83,8 @@ async fn main() -> Result<()> {
 
 async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     let mut app = App::new();
+    let audio = audio::Audio::new();
+    let mut prev_screen = app.screen;
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     // Limpia la pantalla alterna: sin esto, el contenido previo del terminal se
@@ -106,6 +109,21 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
             if let Some(client) = app.client.clone() {
                 agent::spawn_fix_agent(client, id, app.app_name.clone(), err, tx.clone());
             }
+        }
+
+        // Audio según la pantalla: drone mientras trabaja, chime al quedar Live.
+        if app.screen != prev_screen {
+            if !app.muted {
+                match app.screen {
+                    Screen::Launching | Screen::Agent => audio.ambient(),
+                    Screen::Live => {
+                        audio.stop();
+                        audio.chime();
+                    }
+                    _ => audio.stop(),
+                }
+            }
+            prev_screen = app.screen;
         }
 
         app.tick = app.tick.wrapping_add(1);
@@ -139,6 +157,23 @@ async fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result
                                 }
                             }
                             _ => {}
+                        }
+                        continue;
+                    }
+                    // Mute del audio ambiental (m) en pantallas de trabajo — pero no
+                    // cuando el agente espera que teclees un secreto (ahí `m` es texto).
+                    if key.code == KeyCode::Char('m')
+                        && matches!(
+                            app.screen,
+                            Screen::Launching | Screen::Live | Screen::Agent
+                        )
+                        && app.agent_prompt.is_none()
+                    {
+                        app.muted = !app.muted;
+                        if app.muted {
+                            audio.stop();
+                        } else if matches!(app.screen, Screen::Launching | Screen::Agent) {
+                            audio.ambient();
                         }
                         continue;
                     }

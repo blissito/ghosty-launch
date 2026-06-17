@@ -271,7 +271,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             &[("enter", "agregar/reiniciar"), ("esc", "volver")]
         }
         Screen::Envs => &[("enter", "agregar/publicar"), ("esc", "volver")],
-        Screen::Launching => &[("esc", "cancelar")],
+        Screen::Launching => &[("m", "audio"), ("esc", "cancelar")],
         Screen::Live => &[
             ("e", "envs"),
             ("l", "logs"),
@@ -280,7 +280,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("q", "salir"),
         ],
         Screen::Logs => &[("r", "recargar"), ("b/esc", "volver"), ("q", "salir")],
-        Screen::Agent if app.agent_busy => &[("q", "salir")],
+        Screen::Agent if app.agent_busy => &[("m", "audio"), ("q", "salir")],
         Screen::Agent => &[("l", "logs"), ("enter", "continuar"), ("q", "salir")],
         Screen::Error => &[("l", "logs"), ("enter", "volver al panel"), ("q", "salir")],
     };

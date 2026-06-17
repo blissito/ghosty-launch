@@ -375,6 +375,8 @@ pub struct App {
     pub agent_input: String,
     /// Canal de vuelta hacia la tarea del agente con el valor tecleado.
     pub agent_reply: Option<tokio::sync::oneshot::Sender<String>>,
+    /// Audio ambiental silenciado (tecla `m`).
+    pub muted: bool,
     pub should_quit: bool,
 }
 
@@ -422,6 +424,7 @@ impl App {
             agent_prompt: None,
             agent_input: String::new(),
             agent_reply: None,
+            muted: false,
             should_quit: false,
         }
     }
